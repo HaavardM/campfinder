@@ -1,0 +1,29 @@
+# Local PostGIS for the web app.
+#
+# The official postgis/postgis image is amd64 only. On an Apple Silicon Mac it
+# runs under Rosetta (Docker Desktop: Settings → General → "Use Rosetta for
+# x86_64/amd64 emulation"). On the WSL pipeline box it runs natively.
+services:
+  db:
+    image: postgis/postgis:18-3.7
+    platform: linux/amd64
+    environment:
+      POSTGRES_USER: campfinder
+      POSTGRES_PASSWORD: campfinder
+      POSTGRES_DB: campfinder
+    ports:
+      - "5432:5432"
+    volumes:
+      # Postgres 18 images keep data under /var/lib/postgresql/<major>/,
+      # so the volume is mounted one level up.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      # Check over TCP (-h 127.0.0.1). On first start the image runs a
+      # temporary socket-only server to install PostGIS; only the final
+      # server listens on TCP, so this can't pass too early.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "campfinder"]
+      interval: 2s
+      retries: 30
+
+volumes:
+  pgdata:

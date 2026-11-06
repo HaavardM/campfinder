@@ -1,0 +1,4 @@
+.DS_Store
+
+# Pipeline downloads and outputs (tens of GB)
+pipeline/data/
