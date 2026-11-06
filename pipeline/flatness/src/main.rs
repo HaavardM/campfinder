@@ -14,7 +14,7 @@ use flatness::geotiff::{self, Placement as MapPlacement};
 use flatness::tents::{Footprint, Shape, TentsFile};
 use flatness::terrain::pixel_cost;
 use flatness::tile::{
-    BUFFER_M, CELL_SIZE_M, CELLS_PER_SIDE, DTM_SIZE_PX, TILE_SIZE_M, best_placement,
+    BUFFER_M, CELL_SIZE_M, CELLS_PER_SIDE, CellResult, DTM_SIZE_PX, TILE_SIZE_M, best_placement,
     cell_elevation, summarise,
 };
 use progress::{Progress, minutes_seconds};
@@ -70,6 +70,19 @@ fn main() {
             );
             exit(2);
         }
+    }
+
+    // Tent names for the database, so the app can show "Keron 4 GT" rather
+    // than the file-name slug.
+    let mut tents_csv = String::from("slug,name\n");
+    for tent in &config.tents {
+        tents_csv += &format!("{},\"{}\"\n", tent.slug(), tent.name.replace('"', "\"\""));
+    }
+    if let Err(error) = std::fs::create_dir_all(&args.out_dir)
+        .and_then(|_| std::fs::write(args.out_dir.join("tents.csv"), tents_csv))
+    {
+        eprintln!("{}: {error}", args.out_dir.display());
+        exit(2);
     }
 
     let jobs = find_jobs(&args, &config).unwrap_or_else(|error| {
@@ -165,19 +178,21 @@ fn process(
     };
     let n = CELLS_PER_SIDE;
 
+    let cell_heights = cell_elevation(&elevation);
     if job.needs_elevation {
-        geotiff::write_f32(
-            &out_dir.join("elevation.tif"),
-            n,
-            n,
-            &cell_elevation(&elevation),
-            &at,
-        )?;
+        geotiff::write_f32(&out_dir.join("elevation.tif"), n, n, &cell_heights, &at)?;
     }
     let cost = pixel_cost(&elevation, &water, args.max_roughness_m);
     for &t in &job.tents {
         let tent = &config.tents[t];
         let cells = summarise(&best_placement(&cost, &footprints[t]));
+        write_cells_csv(
+            &out_dir.join(format!("{}.cells.csv", tent.slug())),
+            job,
+            &tent.slug(),
+            &cells,
+            &cell_heights,
+        )?;
         if let Shape::Rectangle { .. } = tent.shape {
             geotiff::write_i16(
                 &out_dir.join(format!("{}.heading.tif", tent.slug())),
@@ -205,6 +220,48 @@ fn process(
         job.tents.len(),
         megapixels / seconds
     ))
+}
+
+/// Cells flatter than this are written to the CSV for the database. Steeper
+/// ones are useless for a tent and would only make the tables bigger.
+const MAX_STORED_SLOPE_DEG: f32 = 10.0;
+
+/// One row per usable 10 m cell, ready for Postgres `COPY`:
+/// tent, tile, x, y (south-west corner, EPSG:25833), slope, heading, elevation.
+fn write_cells_csv(
+    path: &Path,
+    job: &Job,
+    tent: &str,
+    cells: &CellResult,
+    elevation: &[f32],
+) -> Result<(), String> {
+    use std::fmt::Write;
+    let mut csv = String::from("tent,tile,x,y,max_slope_deg,heading_deg,elevation_m\n");
+    for row in 0..CELLS_PER_SIDE {
+        for col in 0..CELLS_PER_SIDE {
+            let i = row * CELLS_PER_SIDE + col;
+            let slope = cells.max_slope[i];
+            if slope.is_nan() || slope > MAX_STORED_SLOPE_DEG {
+                continue; // nothing fits, or too steep
+            }
+            // Row 0 is the northern edge of the tile.
+            let x = job.east as usize + col * CELL_SIZE_M;
+            let y = job.north as usize + TILE_SIZE_M - (row + 1) * CELL_SIZE_M;
+            let heading = match cells.heading[i] {
+                -1 => String::new(), // empty = NULL: round tent
+                h => h.to_string(),
+            };
+            writeln!(
+                csv,
+                "{tent},{},{x},{y},{slope:.2},{heading},{:.1}",
+                job.name, elevation[i]
+            )
+            .unwrap();
+        }
+    }
+    let tmp = path.with_extension("csv.tmp");
+    std::fs::write(&tmp, csv).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Every terrain tile in `dtm_dir` (named like `E0220000_N6864000.tif`) that
