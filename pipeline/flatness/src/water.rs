@@ -25,26 +25,27 @@ pub struct Water {
 
 impl Water {
     /// Loads the water polygons from the given GeoPackages (one per county,
-    /// made by `prepare_water.sh`).
-    pub fn load(gpkgs: &[impl AsRef<Path>]) -> Result<Water, String> {
-        let mut polygons = Vec::new();
+    /// made by `prepare_water.sh`), keeping only those that touch `area`
+    /// (west, south, east, north): a county is far bigger than a region.
+    pub fn load(
+        gpkgs: &[impl AsRef<Path>],
+        area: (f64, f64, f64, f64),
+    ) -> Result<Water, String> {
+        let (mut polygons, mut boxes) = (Vec::new(), Vec::new());
         for gpkg in gpkgs {
             let path = gpkg.as_ref().display().to_string();
             let dataset = terrio::open_vector(&path, &Default::default())
                 .map_err(|e| format!("{path}: {e}"))?;
-            for layer in dataset.layers {
-                polygons.extend(layer.features.into_iter().filter(|f| f.geometry.is_some()));
+            for polygon in dataset.layers.into_iter().flat_map(|l| l.features) {
+                let Some(b) = polygon.geometry.as_ref().and_then(|g| g.bbox()) else {
+                    continue;
+                };
+                if overlaps(&b, area) {
+                    polygons.push(polygon);
+                    boxes.push(b);
+                }
             }
         }
-        let boxes = polygons
-            .iter()
-            .map(|f| {
-                f.geometry
-                    .as_ref()
-                    .and_then(|g| g.bbox())
-                    .expect("polygon has a box")
-            })
-            .collect();
         Ok(Water {
             polygons,
             boxes,
@@ -60,15 +61,13 @@ impl Water {
     /// (west, north) in EPSG:25833: 1 where water touches the pixel, 0
     /// elsewhere.
     pub fn mask(&self, west: f64, north: f64, size: usize) -> Result<Vec<u8>, String> {
-        let (east, south) = (west + size as f64, north - size as f64);
+        let tile = (west, north - size as f64, west + size as f64, north);
         let mut near = Layer::new("water");
         near.features = self
             .polygons
             .iter()
             .zip(&self.boxes)
-            .filter(|(_, b)| {
-                b.max_x >= west && b.min_x <= east && b.max_y >= south && b.min_y <= north
-            })
+            .filter(|(_, b)| overlaps(b, tile))
             .map(|(polygon, _)| polygon.clone())
             .collect();
 
@@ -96,4 +95,9 @@ impl Water {
             .map(|pixels| pixels.to_vec())
             .ok_or_else(|| "water mask is not 8-bit".to_string())
     }
+}
+
+/// Does a polygon's bounding box overlap the box (west, south, east, north)?
+fn overlaps(b: &BBox, (west, south, east, north): (f64, f64, f64, f64)) -> bool {
+    b.max_x >= west && b.min_x <= east && b.max_y >= south && b.min_y <= north
 }

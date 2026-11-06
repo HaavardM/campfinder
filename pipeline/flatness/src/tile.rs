@@ -8,14 +8,22 @@ use crate::tents::Footprint;
 
 /// Work tiles are 2 × 2 km squares on a grid aligned to multiples of 2000 m
 /// in EPSG:25833 (UTM zone 33N). A tile is named after its south-west corner.
-/// Must match `TILE_M` in `lib/tiles.env`.
+/// Must match `TILE_M` in `04_load_cells.sh`.
 pub const TILE_SIZE_M: usize = 2000;
 /// Each tile's terrain is downloaded with this much extra border, so a tent
-/// near the tile edge still sees the ground around it. Must match `BUFFER_M`
-/// in `lib/tiles.env` (a mismatch fails loudly: tiles are size-checked).
+/// near the tile edge still sees the ground around it.
 pub const BUFFER_M: usize = 8;
 /// Terrain pixels per side of a downloaded tile (1 m pixels).
 pub const DTM_SIZE_PX: usize = TILE_SIZE_M + 2 * BUFFER_M;
+
+/// The box a tile's terrain and water mask cover: the tile plus its border,
+/// as (west, south, east, north) in EPSG:25833 metres. The terrain download
+/// and the water mask both use it, so their pixels line up exactly.
+pub fn bordered_box(east: u32, north: u32) -> (f64, f64, f64, f64) {
+    let (east, north, border) = (east as f64, north as f64, BUFFER_M as f64);
+    let size = TILE_SIZE_M as f64;
+    (east - border, north - border, east + size + border, north + size + border)
+}
 /// Results are summarised into cells of this size.
 pub const CELL_SIZE_M: usize = 10;
 pub const CELLS_PER_SIDE: usize = TILE_SIZE_M / CELL_SIZE_M;

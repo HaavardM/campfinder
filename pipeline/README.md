@@ -31,13 +31,17 @@ What `run.sh` does:
 | `04_load_cells.sh` | New results into PostGIS, then rebuild the map's bins | ~0.15 s per file, plus the bins |
 
 Rondane + Dovre is about 1,300 tiles: ~22 GB of terrain data. Downloading is
-the slow part (about an hour, limited by Kartverket's server); the CPUs keep
-up with it easily, so processing finishes with the last download.
+the slow part, under an hour. Kartverket's server builds each tile on
+request, ~8 s per tile and connection, so the engine downloads 8 at once
+(tiles larger than 2 km time out). The CPUs keep up with it easily, so
+processing finishes with the last download.
 
-The engine prints a line per downloaded tile (speed, ETA) and per processed
-tile (which thread, how long), and every 2 seconds a strip with one block
-per thread (`█` busy, `·` idle). At the end: tiles per thread and overall
-thread utilisation (low while waiting for downloads, which is expected).
+The engine shows two live progress bars (downloads and processing, with
+tiles/min and ETA) and, next to the processing bar, a strip with one block
+per thread (`█` busy, `·` idle). Above the bars it prints a line per
+downloaded tile (MB/s) and per processed tile (how long, which thread). At
+the end: tiles per thread and overall thread utilisation (low while waiting
+for downloads, which is expected).
 
 Data lands in `data/` (not in git):
 
@@ -127,7 +131,7 @@ the memory-heavy filter loops 4–20× slower (the code was vectorised just the
 same).
 
 ```sh
-cd flatness   # run cargo here, so .cargo/config.toml (target-cpu=native) applies
+cd flatness   # .cargo/config.toml in pipeline/ builds for this CPU (target-cpu=native)
 cargo run --release --example bench -- ../data/dtm/<tile>.tif
 cargo test --release
 cd .. && ./scaling.sh   # same tiles at 1, 2, 4, … threads: where does it stop scaling?

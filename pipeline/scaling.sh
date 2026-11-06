@@ -12,7 +12,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 REGION="${1:-regions/test-known.env}"
 
-(cd flatness && cargo build --release --quiet) # inside the crate, for target-cpu=native
+cargo build --release --quiet --manifest-path flatness/Cargo.toml
 cpus=$(getconf _NPROCESSORS_ONLN)
 
 printf "%8s %10s %9s\n" threads seconds speedup

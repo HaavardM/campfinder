@@ -4,6 +4,7 @@
 # which the flatness engine reads. Each county is done once.
 #
 # Usage: ./prepare_water.sh regions/rondane.env [regions/dovre.env ...]
+# (Other arguments are ignored, so run.sh can pass on all of its own.)
 #
 # Needs GDAL's ogr2ogr (macOS: brew install gdal; Debian: apt install
 # gdal-bin): Kartverket publishes N50 only as an Esri file geodatabase,
@@ -15,6 +16,7 @@ BASE_URL=https://nedlasting.geonorge.no/geonorge/Basisdata/N50Kartdata/FGDB
 mkdir -p data/n50
 
 for region in "$@"; do
+  [[ $region == *.env ]] || continue
   # shellcheck source=/dev/null  # sets N50_COUNTIES, e.g. "34_Innlandet 50_Trondelag"
   source "$region"
   for county in $N50_COUNTIES; do

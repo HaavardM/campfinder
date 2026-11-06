@@ -23,26 +23,25 @@ use crate::grid::Grid;
 /// terrain WCS) that must be `size` × `size` pixels. Georeferencing is not
 /// read back: the tile name says where it is.
 pub fn read_f32(path: &Path, size: usize) -> Result<Grid, String> {
-    match decode(path, size)? {
-        DecodingResult::F32(data) => Ok(Grid {
+    let mut decoder = open_f32(path, size)?;
+    match decoder.read_image() {
+        Ok(DecodingResult::F32(data)) => Ok(Grid {
             width: size,
             height: size,
             data,
         }),
-        _ => Err(format!("{}: expected 32-bit float pixels", path.display())),
+        Ok(_) => Err(format!("{}: expected 32-bit float pixels", path.display())),
+        Err(e) => Err(format!("{}: {e}", path.display())),
     }
 }
 
-/// Reads a single-band 8-bit GeoTIFF (the water masks made by
-/// `gdal_rasterize`) that must be `size` × `size` pixels.
-pub fn read_u8(path: &Path, size: usize) -> Result<Vec<u8>, String> {
-    match decode(path, size)? {
-        DecodingResult::U8(data) => Ok(data),
-        _ => Err(format!("{}: expected 8-bit pixels", path.display())),
-    }
+/// Checks that a file is a `size` × `size` float32 GeoTIFF from its header
+/// alone, without decoding the pixels.
+pub fn check_f32(path: &Path, size: usize) -> Result<(), String> {
+    open_f32(path, size).map(|_| ())
 }
 
-fn decode(path: &Path, size: usize) -> Result<DecodingResult, String> {
+fn open_f32(path: &Path, size: usize) -> Result<Decoder<BufReader<File>>, String> {
     let error = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let file = File::open(path).map_err(|e| error(&e))?;
     let mut decoder = Decoder::new(BufReader::new(file)).map_err(|e| error(&e))?;
@@ -52,7 +51,10 @@ fn decode(path: &Path, size: usize) -> Result<DecodingResult, String> {
             "expected {size}×{size} pixels, got {width}×{height}"
         )));
     }
-    decoder.read_image().map_err(|e| error(&e))
+    if decoder.colortype().map_err(|e| error(&e))? != tiff::ColorType::Gray(32) {
+        return Err(error(&"expected single-band 32-bit pixels"));
+    }
+    Ok(decoder)
 }
 
 /// Writes `bytes` to `<path>.tmp` and renames it into place, so an

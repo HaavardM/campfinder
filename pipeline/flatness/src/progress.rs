@@ -1,21 +1,23 @@
-//! Progress reporting while tiles download and are processed in parallel:
-//! a line per downloaded and per processed tile, a live strip showing which
-//! threads are busy, and a per-thread summary.
+//! Progress while tiles download and are processed in parallel: two live
+//! bars (downloads, processing) with rates and ETAs, a strip showing which
+//! CPUs are busy, a line per tile above the bars, and a per-thread summary.
 //!
-//! Worker threads only touch atomics (lock-free counters), so reporting costs
-//! next to nothing compared with the work itself.
+//! The bars come from the `indicatif` crate. They redraw in place a few
+//! times a second, and hide themselves when the output isn't a terminal
+//! (e.g. piped to a file); the per-tile lines are printed either way.
+//! Worker threads only touch atomics (lock-free counters) and the bars,
+//! so reporting costs next to nothing compared with the work itself.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
+use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
+
 pub struct Progress {
     started: Instant,
-    finished: AtomicBool,
-    /// Tiles to download, and tiles to process (downloaded ones included).
-    to_download: usize,
-    to_process: usize,
-    downloaded: AtomicUsize,
-    processed: AtomicUsize,
+    bars: MultiProgress,
+    download: ProgressBar,
+    process: ProgressBar,
     /// Per processing thread: working on a tile right now?
     busy: Vec<AtomicBool>,
     /// Per processing thread: tiles finished, and milliseconds spent on them.
@@ -25,27 +27,41 @@ pub struct Progress {
 
 impl Progress {
     pub fn new(to_download: usize, to_process: usize, threads: usize) -> Progress {
-        Progress {
+        let bars = MultiProgress::new();
+        let bar = |label: &str, length: usize| {
+            let template = format!(
+                "{label} [{{bar:40.green/dim}}] {{pos:>4}}/{{len}}  {{rate}}  ETA {{eta}}  {{msg}}"
+            );
+            let style = ProgressStyle::with_template(&template)
+                .unwrap()
+                .progress_chars("█▌ ")
+                .with_key("rate", |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                    write!(w, "{:>3.0} tiles/min", state.per_sec() * 60.0).unwrap()
+                });
+            let bar = bars.add(ProgressBar::new(length as u64).with_style(style));
+            // Redraw regularly, so the clock and ETA move between tiles too.
+            bar.enable_steady_tick(Duration::from_millis(250));
+            bar
+        };
+        let download = bar("download", to_download);
+        let process = bar("process ", to_process);
+        let progress = Progress {
             started: Instant::now(),
-            finished: AtomicBool::new(false),
-            to_download,
-            to_process,
-            downloaded: AtomicUsize::new(0),
-            processed: AtomicUsize::new(0),
+            bars,
+            download,
+            process,
             busy: (0..threads).map(|_| AtomicBool::new(false)).collect(),
             tiles: (0..threads).map(|_| AtomicUsize::new(0)).collect(),
             busy_ms: (0..threads).map(|_| AtomicU64::new(0)).collect(),
-        }
+        };
+        progress.show_busy();
+        progress
     }
 
     /// Reports one finished download (from a download thread).
     pub fn downloaded(&self, tile: &str, report: &str) {
-        let done = self.downloaded.fetch_add(1, Relaxed) + 1;
-        println!(
-            "download [{done:>4}/{}] {tile}  {report} | {}",
-            self.to_download,
-            self.rate_and_eta(done, self.to_download)
-        );
+        self.println(format!("download {tile}  {report}"));
+        self.download.inc(1);
     }
 
     /// Runs `work` for one tile on the current processing thread, keeping
@@ -53,50 +69,24 @@ impl Progress {
     pub fn track<T>(&self, work: impl FnOnce() -> Result<String, T>) -> Result<(), T> {
         let thread = rayon::current_thread_index().unwrap_or(0);
         self.busy[thread].store(true, Relaxed);
+        self.show_busy();
         let started = Instant::now();
         let result = work();
         self.busy_ms[thread].fetch_add(started.elapsed().as_millis() as u64, Relaxed);
         self.tiles[thread].fetch_add(1, Relaxed);
         self.busy[thread].store(false, Relaxed);
+        self.show_busy();
+        self.process.inc(1);
 
-        let done = self.processed.fetch_add(1, Relaxed) + 1;
         let line = result?;
-        println!(
-            "process  [{done:>4}/{}] cpu {thread:>2}  {line}",
-            self.to_process
-        );
+        self.println(format!("process  {line}  cpu {thread:>2}"));
         Ok(())
     }
 
-    /// Prints the busy-thread strip every 2 seconds until `finish` is called.
-    /// Meant to run on its own thread, next to the workers.
-    pub fn report_until_finished(&self) {
-        while !self.finished.load(Relaxed) {
-            for _ in 0..20 {
-                std::thread::sleep(Duration::from_millis(100));
-                if self.finished.load(Relaxed) {
-                    return;
-                }
-            }
-            let strip: String = self
-                .busy
-                .iter()
-                .map(|b| if b.load(Relaxed) { '█' } else { '·' })
-                .collect();
-            let busy = strip.chars().filter(|c| *c == '█').count();
-            println!(
-                "  CPUs {strip}  {busy}/{} busy | downloaded {}/{}, processed {}/{}",
-                self.busy.len(),
-                self.downloaded.load(Relaxed),
-                self.to_download,
-                self.processed.load(Relaxed),
-                self.to_process,
-            );
-        }
-    }
-
+    /// Leaves the bars on screen at their final state.
     pub fn finish(&self) {
-        self.finished.store(true, Relaxed);
+        self.download.finish();
+        self.process.finish();
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -125,11 +115,23 @@ impl Progress {
         );
     }
 
-    fn rate_and_eta(&self, done: usize, total: usize) -> String {
-        let seconds = self.started.elapsed().as_secs_f64();
-        let per_minute = done as f64 / seconds * 60.0;
-        let eta = (total - done) as f64 / (per_minute / 60.0).max(1e-9);
-        format!("{per_minute:.0} tiles/min, ETA {}", minutes_seconds(eta))
+    /// The busy strip, one character per processing thread, next to the
+    /// processing bar: `CPUs ███·██·· 5/8 busy`.
+    fn show_busy(&self) {
+        let strip: String = self
+            .busy
+            .iter()
+            .map(|b| if b.load(Relaxed) { '█' } else { '·' })
+            .collect();
+        let busy = self.busy.iter().filter(|b| b.load(Relaxed)).count();
+        self.process
+            .set_message(format!("CPUs {strip} {busy}/{} busy", self.busy.len()));
+    }
+
+    /// Prints a line above the bars. `suspend` clears the bars, runs the
+    /// closure and redraws them; it also works when they're hidden.
+    fn println(&self, line: String) {
+        self.bars.suspend(|| println!("{line}"));
     }
 }
 

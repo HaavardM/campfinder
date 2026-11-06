@@ -28,14 +28,14 @@ use flatness::tents::{Footprint, Shape, Tent, TentsFile};
 use flatness::terrain::pixel_cost;
 use flatness::tile::{
     BUFFER_M, CELL_SIZE_M, CELLS_PER_SIDE, CellResult, DTM_SIZE_PX, TILE_SIZE_M, best_placement,
-    cell_elevation, summarise,
+    bordered_box, cell_elevation, summarise,
 };
 use flatness::water::Water;
 use progress::{Progress, minutes_seconds};
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
 const USAGE: &str = "usage: flatness [--tents tents.toml] [--data data] [--threads N] \
-                     [--downloads 4] [--max-roughness-m 0.1] [--force] REGION.env ...";
+                     [--downloads 8] [--max-roughness-m 0.1] [--force] REGION.env ...";
 
 struct Args {
     regions: Vec<PathBuf>,
@@ -52,6 +52,9 @@ struct Setup {
     args: Args,
     config: TentsFile,
     footprints: Vec<Footprint>,
+    /// South-west corners of every tile of every region, each once
+    /// (regions may overlap).
+    tiles: BTreeSet<(u32, u32)>,
     /// The regions' water polygons.
     water: Water,
 }
@@ -72,19 +75,10 @@ fn main() {
         exit(2);
     });
 
-    // Every tile of every region, each once (regions may overlap).
-    let mut tiles = BTreeSet::new();
-    for path in &setup.args.regions {
-        let region = Region::read(path).unwrap_or_else(|error| {
-            eprintln!("{error}");
-            exit(2);
-        });
-        tiles.extend(region.tiles());
-    }
     let mut on_disk = Vec::new();
     let mut to_download = VecDeque::new();
     let mut done = 0;
-    for (east, north) in tiles {
+    for &(east, north) in &setup.tiles {
         match plan(&setup, east, north) {
             None => done += 1,
             Some(job) if job.dtm.exists() => on_disk.push(job),
@@ -101,12 +95,6 @@ fn main() {
         return;
     }
 
-    if let Some(threads) = setup.args.threads {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build_global()
-            .unwrap();
-    }
     let progress = Progress::new(
         to_download.len(),
         on_disk.len() + to_download.len(),
@@ -130,6 +118,12 @@ fn main() {
 /// for the regions' counties is downloaded.
 fn prepare() -> Result<Setup, String> {
     let args = parse_args().map_err(|error| format!("{error}\n{USAGE}"))?;
+    if let Some(threads) = args.threads {
+        // Read by every rayon thread pool when it starts: ours, and terrio's
+        // own (it rasterizes in parallel too), so both stay within the limit.
+        // SAFETY: no other threads exist yet to read the environment.
+        unsafe { std::env::set_var("RAYON_NUM_THREADS", threads.to_string()) };
+    }
     let config: TentsFile = std::fs::read_to_string(&args.tents)
         .map_err(|e| e.to_string())
         .and_then(|text| toml::from_str(&text).map_err(|e| e.to_string()))
@@ -161,9 +155,11 @@ fn prepare() -> Result<Setup, String> {
     }
     write_atomic(&args.data.join("flatness/tents.csv"), tents_csv.as_bytes())?;
 
-    let mut counties = BTreeSet::new();
+    let (mut tiles, mut counties) = (BTreeSet::new(), BTreeSet::new());
     for path in &args.regions {
-        counties.extend(Region::read(path)?.n50_counties);
+        let region = Region::read(path)?;
+        tiles.extend(region.tiles());
+        counties.extend(region.n50_counties);
     }
     let mut gpkgs = Vec::new();
     for county in &counties {
@@ -176,7 +172,13 @@ fn prepare() -> Result<Setup, String> {
         }
         gpkgs.push(gpkg);
     }
-    let water = Water::load(&gpkgs)?;
+    // Water is only needed within the tiles' bounding box.
+    let boxes = tiles.iter().map(|&(east, north)| bordered_box(east, north));
+    let area = boxes.fold(
+        (f64::MAX, f64::MAX, f64::MIN, f64::MIN),
+        |(w, s, e, n), (bw, bs, be, bn)| (w.min(bw), s.min(bs), e.max(be), n.max(bn)),
+    );
+    let water = Water::load(&gpkgs, area)?;
     println!(
         "{} water polygons from {}",
         water.polygon_count(),
@@ -187,6 +189,7 @@ fn prepare() -> Result<Setup, String> {
         args,
         config,
         footprints,
+        tiles,
         water,
     })
 }
@@ -206,8 +209,6 @@ fn run(
     let (ready, arrivals) = mpsc::channel::<Job>();
 
     std::thread::scope(|scope| {
-        scope.spawn(|| progress.report_until_finished());
-
         // Download threads: each takes the next tile from the queue until
         // it's empty. Waiting on the network costs no CPU, so these run
         // next to the processing threads, not instead of them.
@@ -278,13 +279,10 @@ fn process(job: &Job, setup: &Setup) -> Result<String, String> {
     let started = std::time::Instant::now();
     let elevation = geotiff::read_f32(&job.dtm, DTM_SIZE_PX)?;
     // The water mask covers the same pixels as the terrain: tile + border.
+    let (west, _, _, north) = bordered_box(job.east, job.north);
     let water = setup
         .water
-        .mask(
-            (job.east as usize - BUFFER_M) as f64,
-            (job.north as usize + TILE_SIZE_M + BUFFER_M) as f64,
-            DTM_SIZE_PX,
-        )
+        .mask(west, north, DTM_SIZE_PX)
         .map_err(|e| format!("{}: water mask: {e}", job.name))?;
 
     let out_dir = setup.args.data.join("flatness").join(&job.name);
@@ -381,7 +379,10 @@ fn parse_args() -> Result<Args, String> {
         tents: PathBuf::from("tents.toml"),
         data: PathBuf::from("data"),
         threads: None,
-        downloads: 4, // more would just be impolite to Kartverket's servers
+        // Kartverket limits each connection, not the total: 4 at once gave
+        // 20 tiles/min, 8 gave 26, 16 gave 33. Past 8 it's mostly extra load
+        // on a free service.
+        downloads: 8,
         max_roughness_m: 0.1,
         force: false,
     };

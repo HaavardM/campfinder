@@ -13,28 +13,17 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-regions=()
-options=()
-for arg in "$@"; do
-  case $arg in
-    *.env) regions+=("$arg") ;;
-    *) options+=("$arg") ;;
-  esac
-done
-if [[ ${#regions[@]} -eq 0 ]]; then
+# No region files given: every region in regions/ except test*.
+if [[ " $* " != *".env "* ]]; then
   for region in regions/*.env; do
-    [[ $region == regions/test* ]] || regions+=("$region")
+    [[ $region == regions/test* ]] || set -- "$@" "$region"
   done
 fi
 
-./prepare_water.sh "${regions[@]}"
-
-# Built from inside the crate: Cargo reads flatness/.cargo/config.toml
-# (target-cpu=native) relative to the working directory.
-(cd flatness && cargo build --release --quiet)
-echo "Tip: run htop (or Activity Monitor's CPU history) to watch every CPU."
-# ${options[@]+...}: bash 3.2 (macOS) treats an empty array as unset.
-flatness/target/release/flatness ${options[@]+"${options[@]}"} "${regions[@]}"
+# Both take the same arguments: prepare_water.sh skips the options.
+./prepare_water.sh "$@"
+cargo build --release --quiet --manifest-path flatness/Cargo.toml
+flatness/target/release/flatness "$@"
 
 # A VRT is a small XML file that makes many GeoTIFFs look like one raster,
 # so QGIS can show a whole region at once without copying data.
