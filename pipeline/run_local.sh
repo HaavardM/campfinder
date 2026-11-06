@@ -9,7 +9,10 @@ cd "$(dirname "$0")"
 if [[ $# -gt 0 ]]; then regions=("$@"); else regions=(regions/test.env); fi
 
 GDAL_IMAGE=ghcr.io/osgeo/gdal:ubuntu-small-3.11.4
-in_gdal() { docker run --rm -v "$PWD:/pipeline" -w /pipeline "$GDAL_IMAGE" "$@"; }
+# --init: a tiny init process passes Ctrl-C on to the script, so stopping
+# this script also stops the container (without it, the script would be the
+# container's first process, which ignores Ctrl-C, and keep downloading).
+in_gdal() { docker run --rm --init -v "$PWD:/pipeline" -w /pipeline "$GDAL_IMAGE" "$@"; }
 
 for region in "${regions[@]}"; do # paths inside pipeline/
   in_gdal ./01_download_water.sh "$region"

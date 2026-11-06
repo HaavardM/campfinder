@@ -35,15 +35,18 @@ if [[ ! -f $DTM ]]; then
   WCS="https://wcs.geonorge.no/skwms1/wcs.hoyde-dtm-nhm-25833"
   QUERY="SERVICE=WCS&VERSION=1.0.0&REQUEST=GetCoverage&COVERAGE=nhm_dtm_topo_25833"
   QUERY="$QUERY&CRS=EPSG:25833&FORMAT=GeoTIFF&BBOX=$W,$S,$E,$N&WIDTH=$SIZE_PX&HEIGHT=$SIZE_PX"
-  curl -sf --retry 3 -o "$DTM.part" "$WCS?$QUERY"
-  # Errors can come back as XML with status 200, so check it is a TIFF of the
-  # right size now, while a rerun can still fix it.
-  if ! gdalinfo "$DTM.part" 2> /dev/null | grep -q "Size is $SIZE_PX, $SIZE_PX"; then
-    echo "$NAME: terrain download failed: $(head -c 300 "$DTM.part")" >&2
-    rm -f "$DTM.part"
+  # A temporary name unique to this process ($$), so two runs fetching the
+  # same tile can't move each other's half-written file.
+  part="$DTM.$$.part"
+  curl -sf --retry 3 -o "$part" "$WCS?$QUERY" || true
+  # Errors can come back empty or as XML with status 200, so check it is a
+  # TIFF of the right size now, while a rerun can still fix it.
+  if ! gdalinfo "$part" 2> /dev/null | grep -q "Size is $SIZE_PX, $SIZE_PX"; then
+    echo "$NAME: terrain download failed: $(head -c 300 "$part" 2> /dev/null)" >&2
+    rm -f "$part"
     exit 1
   fi
-  mv "$DTM.part" "$DTM"
+  mv "$part" "$DTM"
 fi
 
 if [[ ! -f $MASK ]]; then
@@ -51,8 +54,8 @@ if [[ ! -f $MASK ]]; then
   # better to lose a metre of shore than to pitch a tent in a lake).
   gdal_rasterize -q -l water -burn 1 -init 0 -at -ot Byte \
     -te "$W" "$S" "$E" "$N" -tr 1 1 -co COMPRESS=DEFLATE \
-    data/water.gpkg "$MASK.part.tif"
-  mv "$MASK.part.tif" "$MASK"
+    data/water.gpkg "$MASK.$$.part.tif"
+  mv "$MASK.$$.part.tif" "$MASK"
 fi
 end=$(date +%s.%N)
 
