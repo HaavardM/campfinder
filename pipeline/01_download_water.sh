@@ -33,12 +33,16 @@ for county in $N50_COUNTIES; do
     mv "$zip.part" "$zip"
   fi
 
-  # GDAL reads straight from the zip. -append adds to water.gpkg (creating it
-  # the first time); polygons along county borders may then appear twice,
-  # which is harmless for a mask.
+  # GDAL reads straight from the zip. The first county creates water.gpkg,
+  # later ones are appended (-update -append, which needs -sql rather than
+  # -select). Polygons along county borders may then appear twice, which is
+  # harmless for a mask.
   echo "Adding water polygons for $county..."
-  ogr2ogr -f GPKG -append "$WATER" "/vsizip/$zip/$name.gdb" N50_Arealdekke_omrade \
-    -where "objtype IN ('Innsjø', 'InnsjøRegulert', 'Elv', 'FerskvannTørrfall', 'Havflate')" \
-    -select objtype -nln water -nlt MULTIPOLYGON -progress
+  mode=()
+  [[ -f $WATER ]] && mode=(-update -append)
+  ogr2ogr -f GPKG "${mode[@]}" "$WATER" "/vsizip/$zip/$name.gdb" \
+    -sql "SELECT objtype FROM N50_Arealdekke_omrade
+          WHERE objtype IN ('Innsjø', 'InnsjøRegulert', 'Elv', 'FerskvannTørrfall', 'Havflate')" \
+    -nln water -nlt MULTIPOLYGON -progress
   touch "$added"
 done
