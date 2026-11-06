@@ -14,6 +14,7 @@ import {
 import { Slider } from "#/components/ui/slider";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { BASEMAPS, type Basemap, isBasemap } from "#/lib/basemaps";
+import { SHARE_COLOURS } from "#/lib/flat-layers";
 import type { Place } from "#/lib/place-search";
 import { REGIONS, type Region } from "#/lib/regions";
 import type { Tent as TentRow } from "#/server/tents";
@@ -76,6 +77,8 @@ export function MapPanel(props: Props) {
 							aria-label="Max slope"
 						/>
 					</div>
+
+					<ShareLegend />
 				</div>
 
 				<div className="flex items-center justify-between gap-2">
@@ -112,5 +115,29 @@ export function MapPanel(props: Props) {
 				</div>
 			</CardContent>
 		</Card>
+	);
+}
+
+// What the colours mean when zoomed out: the share of the ground in each
+// square where the tent fits within the max slope.
+function ShareLegend() {
+	const first = SHARE_COLOURS[0][0];
+	const last = SHARE_COLOURS[SHARE_COLOURS.length - 1][0];
+	const stops = SHARE_COLOURS.map(
+		([share, colour]) =>
+			`${colour} ${((share - first) / (last - first)) * 100}%`,
+	);
+	return (
+		<div className="flex flex-col gap-1 text-xs text-muted-foreground">
+			<span>Ground where the tent fits</span>
+			<div
+				className="h-2 rounded-full"
+				style={{ background: `linear-gradient(to right, ${stops.join(", ")})` }}
+			/>
+			<div className="flex justify-between tabular-nums">
+				<span>{first * 100}%</span>
+				<span>{last * 100}%+</span>
+			</div>
+		</div>
 	);
 }

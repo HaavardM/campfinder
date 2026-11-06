@@ -2,11 +2,25 @@ import type { Map as MaplibreMap, VectorTileSource } from "maplibre-gl";
 
 // The flat-ground layers on the map, fed by our /tiles route.
 //
-// Zoomed out: a heatmap of "bins" (the share of each bin that is flat
-// enough). From zoom 14: the 10 m "cells", coloured by slope.
+// Zoomed out: "bins", squares coloured by the share of their ground where the
+// tent fits, so the areas with the most spots stand out. From zoom 14: the
+// 10 m "cells", coloured by slope.
+//
+// The tile route decides which of the two a tile holds, so the layers have no
+// zoom limits of their own. That matters while zooming: MapLibre shows the
+// previous zoom's tiles until the new ones arrive, and those must still draw.
 
 const SOURCE = "flat";
-const CELLS_FROM_ZOOM = 14;
+
+/// Colour scale for the zoomed-out squares: [share of ground, colour].
+/// Exported so the legend uses exactly the same scale.
+export const SHARE_COLOURS: [number, string][] = [
+	[0.05, "#e5f5e0"],
+	[0.15, "#a1d99b"],
+	[0.3, "#41ab5d"],
+	[0.5, "#006d2c"],
+	[0.8, "#00441b"],
+];
 
 export type FlatFilter = { tent: string; maxSlope: number };
 
@@ -35,31 +49,21 @@ function addFlatLayers(map: MaplibreMap, filter: FlatFilter) {
 	});
 
 	map.addLayer({
-		id: "flat-heatmap",
-		type: "heatmap",
+		id: "flat-bins",
+		type: "fill",
 		source: SOURCE,
 		"source-layer": "bins",
-		maxzoom: CELLS_FROM_ZOOM,
+		// Hide squares with only a few scattered spots.
+		filter: [">=", ["get", "share"], SHARE_COLOURS[0][0]],
 		paint: {
-			"heatmap-weight": ["get", "share"],
-			"heatmap-radius": 20,
-			"heatmap-intensity": 1.6,
-			"heatmap-opacity": 0.75,
-			// Transparent where nothing is flat, deep green where most is.
-			"heatmap-color": [
+			// Antialiased edges leave thin seams between neighbouring squares.
+			"fill-antialias": false,
+			"fill-opacity": 0.7,
+			"fill-color": [
 				"interpolate",
 				["linear"],
-				["heatmap-density"],
-				0,
-				"rgba(0, 0, 0, 0)",
-				0.2,
-				"#c7e9c0",
-				0.5,
-				"#74c476",
-				0.8,
-				"#31a354",
-				1,
-				"#006d2c",
+				["get", "share"],
+				...SHARE_COLOURS.flat(),
 			],
 		},
 	});
@@ -69,7 +73,6 @@ function addFlatLayers(map: MaplibreMap, filter: FlatFilter) {
 		type: "fill",
 		source: SOURCE,
 		"source-layer": "cells",
-		minzoom: CELLS_FROM_ZOOM,
 		paint: {
 			"fill-opacity": 0.55,
 			// Flattest ground darkest green, up to yellow at 10°.

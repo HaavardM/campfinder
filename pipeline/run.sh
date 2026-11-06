@@ -2,7 +2,7 @@
 # The whole pipeline. Safe to rerun at any time: every step skips work that
 # is already done.
 #
-# Usage: ./run.sh                       every region in regions/ except test
+# Usage: ./run.sh                       every region in regions/ except test*
 #        ./run.sh regions/test.env      just the given region(s)
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -12,7 +12,7 @@ if [[ $# -gt 0 ]]; then
 else
   regions=()
   for region in regions/*.env; do
-    [[ $region == regions/test.env ]] || regions+=("$region")
+    [[ $region == regions/test* ]] || regions+=("$region")
   done
 fi
 

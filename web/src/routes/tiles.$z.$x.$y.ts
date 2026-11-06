@@ -7,9 +7,9 @@ import { sql } from "#/server/db";
 // A vector tile (Mapbox Vector Tile format) of flat ground, built by PostGIS:
 //
 // - zoom 14 and closer: layer "cells", the 10 m cells themselves;
-// - further out: layer "bins", one point per bin of cells with the share of
-//   the bin that is flat enough, for the heatmap. Sending every cell at low
-//   zoom would mean hundreds of thousands of polygons per tile.
+// - further out: layer "bins", larger squares with the share of their 10 m
+//   cells where the tent fits. Sending every cell at low zoom would mean
+//   hundreds of thousands of polygons per tile.
 //
 // Cells are stored in UTM 33 (EPSG:25833); web map tiles are in Web Mercator
 // (EPSG:3857), so geometries are transformed on the way out.
@@ -80,8 +80,8 @@ function binsTile(
 	tent: string,
 	maxSlope: number,
 ) {
-	// Bins double in size with each zoom level out, so a tile always holds
-	// roughly the same number of points: 40 m at zoom 13, 80 m at 12, …
+	// Bins double in size with each zoom level out, so they always look about
+	// the same size on screen (~9 px): 40 m at zoom 13, 80 m at 12, …
 	const binM = 10 * 2 ** (CELLS_FROM_ZOOM + 1 - z);
 	const cellsPerBin = (binM / 10) ** 2;
 	return sql`
@@ -98,12 +98,13 @@ function binsTile(
 			  AND c.geom && bounds.utm
 			GROUP BY 1, 2
 		),
-		points AS (
+		squares AS (
 			SELECT ST_AsMVTGeom(
-			           ST_Transform(ST_Point((bx + 0.5) * ${binM}, (by + 0.5) * ${binM}, 25833), 3857),
+			           ST_Transform(ST_MakeEnvelope(
+			               bx * ${binM}, by * ${binM}, (bx + 1) * ${binM}, (by + 1) * ${binM}, 25833), 3857),
 			           bounds.web) AS geom,
 			       flat_cells::float / ${cellsPerBin} AS share
 			FROM bins, bounds
 		)
-		SELECT ST_AsMVT(points, 'bins') AS mvt FROM points`;
+		SELECT ST_AsMVT(squares, 'bins') AS mvt FROM squares`;
 }
