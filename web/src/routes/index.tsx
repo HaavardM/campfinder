@@ -6,6 +6,7 @@ import { type Basemap, isBasemap, showBasemap } from "#/lib/basemaps";
 import { showFlat } from "#/lib/flat-layers";
 import { type MapView, useMaplibre } from "#/lib/use-maplibre";
 import { getTents } from "#/server/tents";
+import { getTileVersion } from "#/server/tile-version";
 
 // Everything that describes the current view lives in the URL, so a reload or
 // a shared link opens the same place. Example: /?lat=61.93&lon=9.73&zoom=10
@@ -38,13 +39,19 @@ export const Route = createFileRoute("/")({
 		tent: typeof search.tent === "string" ? search.tent : undefined,
 		maxSlope: numberOr(search.maxSlope, RONDANE.maxSlope),
 	}),
-	loader: () => getTents(),
+	loader: async () => {
+		const [tents, tileVersion] = await Promise.all([
+			getTents(),
+			getTileVersion(),
+		]);
+		return { tents, tileVersion };
+	},
 	component: MapPage,
 });
 
 function MapPage() {
 	const search = Route.useSearch();
-	const tents = Route.useLoaderData();
+	const { tents, tileVersion } = Route.useLoaderData();
 	const navigate = useNavigate({ from: "/" });
 	const containerRef = useRef<HTMLDivElement>(null);
 	const map = useMaplibre(containerRef, search, search.basemap);
@@ -78,8 +85,10 @@ function MapPage() {
 	}, [map, search.basemap]);
 
 	useEffect(() => {
-		if (map && tent) showFlat(map, { tent, maxSlope: search.maxSlope });
-	}, [map, tent, search.maxSlope]);
+		if (map && tent) {
+			showFlat(map, { tent, maxSlope: search.maxSlope, tileVersion });
+		}
+	}, [map, tent, search.maxSlope, tileVersion]);
 
 	return (
 		<main className="relative h-dvh w-full">

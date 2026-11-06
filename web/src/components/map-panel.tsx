@@ -14,7 +14,12 @@ import {
 import { Slider } from "#/components/ui/slider";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { BASEMAPS, type Basemap, isBasemap } from "#/lib/basemaps";
-import { MAX_SLOPE_DEG, SCORE_COLOURS } from "#/lib/flat-layers";
+import {
+	AREA_COLOUR,
+	AREA_OUTLINE_COLOUR,
+	MAX_SLOPE_DEG,
+	SCORE_COLOURS,
+} from "#/lib/flat-layers";
 import type { Place } from "#/lib/place-search";
 import { REGIONS, type Region } from "#/lib/regions";
 import type { Tent as TentRow } from "#/server/tents";
@@ -117,7 +122,8 @@ export function MapPanel(props: Props) {
 	);
 }
 
-// What the colours mean: how good the ground in a square is for the tent.
+// What the colours mean: green areas have spots for the tent, and the orange
+// areas, when zoomed in, are where it fits.
 function ScoreLegend() {
 	const first = SCORE_COLOURS[0][0];
 	const last = SCORE_COLOURS[SCORE_COLOURS.length - 1][0];
@@ -127,16 +133,22 @@ function ScoreLegend() {
 	);
 	return (
 		<div className="flex flex-col gap-1 text-xs text-muted-foreground">
-			<span>Ground for the tent</span>
+			<span>Spots for the tent</span>
 			<div
 				className="h-2 rounded-full"
 				style={{ background: `linear-gradient(to right, ${stops.join(", ")})` }}
 			/>
 			<div className="flex justify-between">
-				<span>Some</span>
-				<span>Lots of flat ground</span>
+				<span>A few</span>
+				<span>Many</span>
 			</div>
-			<span>Zoom in close to see the exact spots.</span>
+			<span className="flex items-center gap-1.5">
+				<span
+					className="size-2.5 shrink-0 border"
+					style={{ background: AREA_COLOUR, borderColor: AREA_OUTLINE_COLOUR }}
+				/>
+				Zoom in to see where it fits.
+			</span>
 		</div>
 	);
 }
