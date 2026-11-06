@@ -17,14 +17,17 @@ cd "$(dirname "$0")"
 BASE_URL=https://nedlasting.geonorge.no/geonorge/Basisdata/N50Kartdata/FGDB
 # The allemannsrett: no camping within 150 m of an inhabited house or cabin.
 HOUSE_DISTANCE_M=150
+# Keep just off the water's edge, where N50's shorelines put spots on the
+# waterline. Small on purpose: camping by the water is half the point.
+SHORE_M=2
+WATER="'Innsjø', 'InnsjøRegulert', 'Elv', 'FerskvannTørrfall', 'Havflate'"
 
 # Step 1 copies these from each county's N50 into a small GeoPackage, cut to
 # the region: N50 layer, then which objects (an attribute filter). The
 # geodatabase driver applies both filters itself, which is fast.
 COPIES=(
-  "N50_Arealdekke_omrade" "objtype IN ('Innsjø', 'InnsjøRegulert', 'Elv',
-    'FerskvannTørrfall', 'Havflate', 'Myr', 'DyrketMark', 'Tettbebyggelse',
-    'BymessigBebyggelse')"
+  "N50_Arealdekke_omrade" "objtype IN ($WATER, 'Myr', 'DyrketMark',
+    'Tettbebyggelse', 'BymessigBebyggelse')"
   "N50_Arealdekke_senterlinje" "objtype = 'ElvBekk'"
   # Inhabited buildings, by the building register's type: 111–179 are
   # houses, cabins, summer farms and mountain huts (not barns, garages or
@@ -33,17 +36,20 @@ COPIES=(
 )
 # Step 2 turns the copies into no-go polygons, one query per kind. ST_Buffer
 # widens a shape by a distance; the third argument is the points per quarter
-# circle (4 makes a 16-sided circle, close enough).
+# circle (4 makes a 16-sided circle, close enough; 1 cuts corners square).
 QUERIES=(
-  # Water, bogs and farmland (no camping on cultivated land) as mapped.
+  # Water, and its shore.
+  "SELECT objtype AS kind, ST_Buffer(geom, $SHORE_M, 1) AS geom
+   FROM N50_Arealdekke_omrade WHERE objtype IN ($WATER)"
+  # Bogs and farmland (no camping on cultivated land) as mapped.
   "SELECT objtype AS kind, geom FROM N50_Arealdekke_omrade
-   WHERE objtype NOT IN ('Tettbebyggelse', 'BymessigBebyggelse')"
+   WHERE objtype IN ('Myr', 'DyrketMark')"
   # Built-up areas, and their 150 m.
   "SELECT objtype AS kind, ST_Buffer(geom, $HOUSE_DISTANCE_M, 4) AS geom
    FROM N50_Arealdekke_omrade
    WHERE objtype IN ('Tettbebyggelse', 'BymessigBebyggelse')"
-  # Streams are lines in N50: 2 m either side.
-  "SELECT objtype AS kind, ST_Buffer(geom, 2, 1) AS geom FROM N50_Arealdekke_senterlinje"
+  # Streams are lines in N50: the shore either side.
+  "SELECT objtype AS kind, ST_Buffer(geom, $SHORE_M, 1) AS geom FROM N50_Arealdekke_senterlinje"
   "SELECT 'Bolig' AS kind, ST_Buffer(geom, $HOUSE_DISTANCE_M, 4) AS geom
    FROM N50_BygningerOgAnlegg_posisjon"
 )
