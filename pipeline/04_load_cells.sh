@@ -11,8 +11,7 @@
 #                                 Docker Compose database in ../)
 set -euo pipefail
 cd "$(dirname "$0")"
-# shellcheck source=lib/tiles.env
-source lib/tiles.env
+TILE_M=2000 # tile size: must match TILE_SIZE_M in flatness/src/tile.rs
 
 PSQL="${PSQL:-docker compose -f ../docker-compose.yml exec -T db psql -U campfinder}"
 psql_run() { $PSQL -q -v ON_ERROR_STOP=1 "$@"; }

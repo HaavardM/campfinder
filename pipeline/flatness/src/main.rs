@@ -1,36 +1,59 @@
-//! Command line: process every downloaded terrain tile that is missing
-//! results, in parallel.
+//! Command line: the whole pipeline for some regions, from download to
+//! results.
 //!
-//!   flatness --tents tents.toml --dtm-dir data/dtm --water-dir data/water
-//!            --out-dir data/flatness [--threads N] [--max-roughness-m 0.1] [--force]
+//!   flatness [options] regions/rondane.env regions/dovre.env
+//!
+//! 1. Loads the regions' water polygons (prepared per county by
+//!    `prepare_water.sh`).
+//! 2. Downloads the terrain tiles not on disk yet, a few at a time, and
+//!    processes every tile as soon as it's there. Downloading is the slow
+//!    part, so the CPUs keep up with the downloads.
+//! 3. Writes per tile: GeoTIFFs for QGIS and a CSV for the database.
+//!
+//! Reruns only do what's missing: finished tiles are skipped, downloaded
+//! ones reused.
 
 mod progress;
 
+use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::exit;
-use std::time::Instant;
+use std::sync::Mutex;
+use std::sync::mpsc;
 
+use flatness::download;
 use flatness::geotiff::{self, Georef, write_atomic};
+use flatness::region::{Region, tile_name};
 use flatness::tents::{Footprint, Shape, Tent, TentsFile};
 use flatness::terrain::pixel_cost;
 use flatness::tile::{
     BUFFER_M, CELL_SIZE_M, CELLS_PER_SIDE, CellResult, DTM_SIZE_PX, TILE_SIZE_M, best_placement,
     cell_elevation, summarise,
 };
+use flatness::water::Water;
 use progress::{Progress, minutes_seconds};
-use rayon::prelude::*;
+use rayon::iter::{ParallelBridge, ParallelIterator};
 
-const USAGE: &str = "usage: flatness --tents FILE --dtm-dir DIR --water-dir DIR --out-dir DIR \
-                     [--threads N] [--max-roughness-m M] [--force]";
+const USAGE: &str = "usage: flatness [--tents tents.toml] [--data data] [--threads N] \
+                     [--downloads 4] [--max-roughness-m 0.1] [--force] REGION.env ...";
 
 struct Args {
+    regions: Vec<PathBuf>,
     tents: PathBuf,
-    dtm_dir: PathBuf,
-    water_dir: PathBuf,
-    out_dir: PathBuf,
+    data: PathBuf,
     threads: Option<usize>,
+    downloads: usize,
     max_roughness_m: f32,
     force: bool,
+}
+
+/// What everything needs to know: settings, tents, and where things are.
+struct Setup {
+    args: Args,
+    config: TentsFile,
+    footprints: Vec<Footprint>,
+    /// The regions' water polygons.
+    water: Water,
 }
 
 /// One tile and the work it still needs.
@@ -44,17 +67,73 @@ struct Job {
 }
 
 fn main() {
-    let args = parse_args().unwrap_or_else(|error| {
-        eprintln!("{error}\n{USAGE}");
+    let setup = prepare().unwrap_or_else(|error| {
+        eprintln!("{error}");
         exit(2);
     });
+
+    // Every tile of every region, each once (regions may overlap).
+    let mut tiles = BTreeSet::new();
+    for path in &setup.args.regions {
+        let region = Region::read(path).unwrap_or_else(|error| {
+            eprintln!("{error}");
+            exit(2);
+        });
+        tiles.extend(region.tiles());
+    }
+    let mut on_disk = Vec::new();
+    let mut to_download = VecDeque::new();
+    let mut done = 0;
+    for (east, north) in tiles {
+        match plan(&setup, east, north) {
+            None => done += 1,
+            Some(job) if job.dtm.exists() => on_disk.push(job),
+            Some(job) => to_download.push_back(job),
+        }
+    }
+    println!(
+        "{} tiles: {done} done, {} downloaded and waiting, {} to download",
+        done + on_disk.len() + to_download.len(),
+        on_disk.len(),
+        to_download.len()
+    );
+    if on_disk.is_empty() && to_download.is_empty() {
+        return;
+    }
+
+    if let Some(threads) = setup.args.threads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build_global()
+            .unwrap();
+    }
+    let progress = Progress::new(
+        to_download.len(),
+        on_disk.len() + to_download.len(),
+        rayon::current_num_threads(),
+    );
+    let failures = run(&setup, on_disk, to_download, &progress);
+
+    let seconds = progress.elapsed().as_secs_f64();
+    println!("Done in {} ({seconds:.1} s)", minutes_seconds(seconds));
+    progress.print_summary();
+    if !failures.is_empty() {
+        eprintln!("{} tiles failed (rerun to retry):", failures.len());
+        for failure in failures {
+            eprintln!("  {failure}");
+        }
+        exit(1);
+    }
+}
+
+/// Reads the settings and tents, checks them, and makes sure the N50 data
+/// for the regions' counties is downloaded.
+fn prepare() -> Result<Setup, String> {
+    let args = parse_args().map_err(|error| format!("{error}\n{USAGE}"))?;
     let config: TentsFile = std::fs::read_to_string(&args.tents)
         .map_err(|e| e.to_string())
         .and_then(|text| toml::from_str(&text).map_err(|e| e.to_string()))
-        .unwrap_or_else(|error| {
-            eprintln!("{}: {error}", args.tents.display());
-            exit(2);
-        });
+        .map_err(|error| format!("{}: {error}", args.tents.display()))?;
     let footprints: Vec<Footprint> = config
         .tents
         .iter()
@@ -64,100 +143,151 @@ fn main() {
         // +1 for the slope calculation's own 3×3 neighbourhood, +1 for the
         // 2×2 sampling when rotating.
         if footprint.reach() + 2.0 > BUFFER_M as f32 {
-            eprintln!(
+            return Err(format!(
                 "{} is too large for the {BUFFER_M} m tile border",
                 tent.name
-            );
-            exit(2);
+            ));
         }
     }
 
+    for dir in ["dtm", "n50", "flatness"] {
+        std::fs::create_dir_all(args.data.join(dir)).map_err(|e| e.to_string())?;
+    }
     // Tent names for the database, so the app can show "Keron 4 GT" rather
     // than the file-name slug.
     let mut tents_csv = String::from("slug,name\n");
     for tent in &config.tents {
         tents_csv += &format!("{},\"{}\"\n", tent.slug(), tent.name.replace('"', "\"\""));
     }
-    if let Err(error) = std::fs::create_dir_all(&args.out_dir)
-        .map_err(|e| format!("{}: {e}", args.out_dir.display()))
-        .and_then(|_| write_atomic(&args.out_dir.join("tents.csv"), tents_csv.as_bytes()))
-    {
-        eprintln!("{error}");
-        exit(2);
-    }
+    write_atomic(&args.data.join("flatness/tents.csv"), tents_csv.as_bytes())?;
 
-    let jobs = find_jobs(&args, &config, &footprints).unwrap_or_else(|error| {
-        eprintln!("{error}");
-        exit(2);
-    });
-    if jobs.is_empty() {
-        println!("Nothing to do: every tile is up to date.");
-        return;
+    let mut counties = BTreeSet::new();
+    for path in &args.regions {
+        counties.extend(Region::read(path)?.n50_counties);
     }
-    if let Some(threads) = args.threads {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build_global()
-            .unwrap();
-    }
-    println!(
-        "{} tiles to process on {} threads",
-        jobs.len(),
-        rayon::current_num_threads()
-    );
-
-    // Tiles are independent, so each thread takes whole tiles. rayon's work
-    // stealing keeps every thread busy even when some tiles take longer.
-    // A separate reporter thread prints which threads are busy meanwhile.
-    let started = Instant::now();
-    let progress = Progress::new(jobs.len(), rayon::current_num_threads());
-    let failures: Vec<String> = std::thread::scope(|scope| {
-        scope.spawn(|| progress.report_until_finished());
-        let failures = jobs
-            .par_iter()
-            .filter_map(|job| {
-                progress
-                    .track(|| process(job, &args, &config, &footprints))
-                    .err()
-            })
-            .collect();
-        progress.finish();
-        failures
-    });
-
-    let seconds = started.elapsed().as_secs_f64();
-    let megapixels = jobs.len() as f64 * (DTM_SIZE_PX * DTM_SIZE_PX) as f64 / 1e6;
-    println!(
-        "Done: {} tiles in {} ({:.2} s per tile, {:.0} Mpx/s across all threads)",
-        jobs.len(),
-        minutes_seconds(seconds),
-        seconds / jobs.len() as f64,
-        megapixels / seconds
-    );
-    progress.print_summary();
-    if !failures.is_empty() {
-        eprintln!("{} tiles failed:", failures.len());
-        for failure in failures {
-            eprintln!("  {failure}");
+    let mut gpkgs = Vec::new();
+    for county in &counties {
+        let gpkg = args.data.join(format!("n50/{county}.water.gpkg"));
+        if !gpkg.exists() {
+            return Err(format!(
+                "{}: missing; run ./prepare_water.sh with the region files first",
+                gpkg.display()
+            ));
         }
-        exit(1);
+        gpkgs.push(gpkg);
     }
+    let water = Water::load(&gpkgs)?;
+    println!(
+        "{} water polygons from {}",
+        water.polygon_count(),
+        counties.into_iter().collect::<Vec<_>>().join(", ")
+    );
+
+    Ok(Setup {
+        args,
+        config,
+        footprints,
+        water,
+    })
+}
+
+/// Downloads `to_download` on a few threads while the CPUs process every
+/// tile as soon as it's on disk (`on_disk` first). Returns the errors.
+fn run(
+    setup: &Setup,
+    on_disk: Vec<Job>,
+    to_download: VecDeque<Job>,
+    progress: &Progress,
+) -> Vec<String> {
+    let queue = Mutex::new(to_download);
+    let failures = Mutex::new(Vec::new());
+    // Tiles ready to process travel through a channel: download threads
+    // send, the processing threads receive.
+    let (ready, arrivals) = mpsc::channel::<Job>();
+
+    std::thread::scope(|scope| {
+        scope.spawn(|| progress.report_until_finished());
+
+        // Download threads: each takes the next tile from the queue until
+        // it's empty. Waiting on the network costs no CPU, so these run
+        // next to the processing threads, not instead of them.
+        for _ in 0..setup.args.downloads {
+            let ready = ready.clone();
+            let (queue, failures) = (&queue, &failures);
+            scope.spawn(move || {
+                loop {
+                    let next = queue.lock().unwrap().pop_front();
+                    let Some(job) = next else { break };
+                    match download::terrain_tile(job.east, job.north, &job.dtm) {
+                        Ok(report) => {
+                            progress.downloaded(&job.name, &report);
+                            ready.send(job).unwrap();
+                        }
+                        Err(error) => failures.lock().unwrap().push(error),
+                    }
+                }
+            });
+        }
+        for job in on_disk {
+            ready.send(job).unwrap();
+        }
+        // The channel closes when the last sender is gone: this one now, the
+        // download threads' copies when they finish.
+        drop(ready);
+
+        // Processing: rayon takes tiles from the channel as they arrive and
+        // spreads them over its threads (`par_bridge` turns an ordinary
+        // iterator into parallel work).
+        arrivals.into_iter().par_bridge().for_each(|job| {
+            if let Err(error) = progress.track(|| process(&job, setup)) {
+                failures.lock().unwrap().push(error);
+            }
+        });
+        progress.finish();
+    });
+    failures.into_inner().unwrap()
+}
+
+/// What a tile still needs, or None if it's done.
+fn plan(setup: &Setup, east: u32, north: u32) -> Option<Job> {
+    let name = tile_name(east, north);
+    let out_dir = setup.args.data.join("flatness").join(&name);
+    let tents: Vec<usize> = (0..setup.config.tents.len())
+        .filter(|&t| {
+            let done = std::fs::read_to_string(done_path(&out_dir, &setup.config.tents[t]));
+            let wanted = settings_used(&setup.footprints[t], setup.args.max_roughness_m);
+            setup.args.force || done.ok() != Some(wanted)
+        })
+        .collect();
+    let needs_elevation = setup.args.force || !out_dir.join(ELEVATION_FILE).exists();
+    if tents.is_empty() && !needs_elevation {
+        return None;
+    }
+    Some(Job {
+        dtm: setup.args.data.join("dtm").join(format!("{name}.tif")),
+        name,
+        east,
+        north,
+        tents,
+        needs_elevation,
+    })
 }
 
 /// Processes one tile and returns a one-line report of how it went.
-fn process(
-    job: &Job,
-    args: &Args,
-    config: &TentsFile,
-    footprints: &[Footprint],
-) -> Result<String, String> {
-    let started = Instant::now();
+fn process(job: &Job, setup: &Setup) -> Result<String, String> {
+    let started = std::time::Instant::now();
     let elevation = geotiff::read_f32(&job.dtm, DTM_SIZE_PX)?;
-    let water = geotiff::read_u8(
-        &args.water_dir.join(format!("{}.tif", job.name)),
-        DTM_SIZE_PX,
-    )?;
-    let out_dir = args.out_dir.join(&job.name);
+    // The water mask covers the same pixels as the terrain: tile + border.
+    let water = setup
+        .water
+        .mask(
+            (job.east as usize - BUFFER_M) as f64,
+            (job.north as usize + TILE_SIZE_M + BUFFER_M) as f64,
+            DTM_SIZE_PX,
+        )
+        .map_err(|e| format!("{}: water mask: {e}", job.name))?;
+
+    let out_dir = setup.args.data.join("flatness").join(&job.name);
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     // Results cover the tile without its border, in 10 m cells.
     let at = Georef {
@@ -171,10 +301,10 @@ fn process(
     if job.needs_elevation {
         geotiff::write_f32(&out_dir.join(ELEVATION_FILE), n, n, &cell_heights, &at)?;
     }
-    let cost = pixel_cost(&elevation, &water, args.max_roughness_m);
+    let cost = pixel_cost(&elevation, &water, setup.args.max_roughness_m);
     for &t in &job.tents {
-        let tent = &config.tents[t];
-        let cells = summarise(&best_placement(&cost, &footprints[t]));
+        let tent = &setup.config.tents[t];
+        let cells = summarise(&best_placement(&cost, &setup.footprints[t]));
         let file = |kind: &str| out_dir.join(format!("{}.{kind}", tent.slug()));
         write_cells_csv(&file("cells.csv"), job, &tent.slug(), &cells, &cell_heights)?;
         geotiff::write_f32(&file("slope.tif"), n, n, &cells.max_slope, &at)?;
@@ -182,7 +312,7 @@ fn process(
             geotiff::write_i16(&file("heading.tif"), n, n, &cells.heading, &at)?;
         }
         // Written last: marks this tent as done, with these settings.
-        let settings = settings_used(&footprints[t], args.max_roughness_m);
+        let settings = settings_used(&setup.footprints[t], setup.args.max_roughness_m);
         write_atomic(&done_path(&out_dir, tent), settings.as_bytes())?;
     }
 
@@ -245,91 +375,42 @@ fn settings_used(footprint: &Footprint, max_roughness_m: f32) -> String {
     format!("{footprint:?} max_roughness_m={max_roughness_m}\n")
 }
 
-/// Every terrain tile in `dtm_dir` (named like `E0220000_N6864000.tif`) that
-/// lacks an up-to-date result for some tent, or `--force` for all of them.
-fn find_jobs(
-    args: &Args,
-    config: &TentsFile,
-    footprints: &[Footprint],
-) -> Result<Vec<Job>, String> {
-    let entries =
-        std::fs::read_dir(&args.dtm_dir).map_err(|e| format!("{}: {e}", args.dtm_dir.display()))?;
-    let mut jobs = Vec::new();
-    for entry in entries {
-        let path = entry.map_err(|e| e.to_string())?.path();
-        let Some((name, east, north)) = parse_tile_name(&path) else {
-            continue;
-        };
-        let out_dir = args.out_dir.join(&name);
-        let tents: Vec<usize> = (0..config.tents.len())
-            .filter(|&t| {
-                let done = std::fs::read_to_string(done_path(&out_dir, &config.tents[t]));
-                let wanted = settings_used(&footprints[t], args.max_roughness_m);
-                args.force || done.ok() != Some(wanted)
-            })
-            .collect();
-        let needs_elevation = args.force || !out_dir.join(ELEVATION_FILE).exists();
-        if !tents.is_empty() || needs_elevation {
-            jobs.push(Job {
-                name,
-                east,
-                north,
-                dtm: path,
-                tents,
-                needs_elevation,
-            });
-        }
-    }
-    jobs.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(jobs)
-}
-
-/// "E0220000_N6864000.tif" → ("E0220000_N6864000", 220000, 6864000)
-fn parse_tile_name(path: &Path) -> Option<(String, u32, u32)> {
-    if path.extension()? != "tif" {
-        return None;
-    }
-    let name = path.file_stem()?.to_str()?.to_string();
-    let (e, n) = name.strip_prefix('E')?.split_once("_N")?;
-    let (east, north) = (e.parse().ok()?, n.parse().ok()?);
-    Some((name, east, north))
-}
-
 fn parse_args() -> Result<Args, String> {
-    let mut tents = None;
-    let mut dtm_dir = None;
-    let mut water_dir = None;
-    let mut out_dir = None;
-    let mut threads = None;
-    let mut max_roughness_m = 0.1;
-    let mut force = false;
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        let mut value = || args.next().ok_or(format!("{arg} needs a value"));
-        match arg.as_str() {
-            "--tents" => tents = Some(PathBuf::from(value()?)),
-            "--dtm-dir" => dtm_dir = Some(PathBuf::from(value()?)),
-            "--water-dir" => water_dir = Some(PathBuf::from(value()?)),
-            "--out-dir" => out_dir = Some(PathBuf::from(value()?)),
+    let mut args = Args {
+        regions: Vec::new(),
+        tents: PathBuf::from("tents.toml"),
+        data: PathBuf::from("data"),
+        threads: None,
+        downloads: 4, // more would just be impolite to Kartverket's servers
+        max_roughness_m: 0.1,
+        force: false,
+    };
+    let mut words = std::env::args().skip(1);
+    while let Some(word) = words.next() {
+        let mut value = || words.next().ok_or(format!("{word} needs a value"));
+        match word.as_str() {
+            "--tents" => args.tents = PathBuf::from(value()?),
+            "--data" => args.data = PathBuf::from(value()?),
             "--threads" => {
-                threads = Some(value()?.parse().map_err(|_| "--threads must be a number")?)
+                args.threads = Some(value()?.parse().map_err(|_| "--threads must be a number")?)
+            }
+            "--downloads" => {
+                args.downloads = value()?
+                    .parse()
+                    .map_err(|_| "--downloads must be a number")?
             }
             "--max-roughness-m" => {
-                max_roughness_m = value()?
+                args.max_roughness_m = value()?
                     .parse()
                     .map_err(|_| "--max-roughness-m must be a number")?
             }
-            "--force" => force = true,
-            other => return Err(format!("unknown argument {other}")),
+            "--force" => args.force = true,
+            other if other.starts_with("--") => return Err(format!("unknown option {other}")),
+            region => args.regions.push(PathBuf::from(region)),
         }
     }
-    Ok(Args {
-        tents: tents.ok_or("--tents is required")?,
-        dtm_dir: dtm_dir.ok_or("--dtm-dir is required")?,
-        water_dir: water_dir.ok_or("--water-dir is required")?,
-        out_dir: out_dir.ok_or("--out-dir is required")?,
-        threads,
-        max_roughness_m,
-        force,
-    })
+    if args.regions.is_empty() {
+        return Err("give at least one region file".into());
+    }
+    Ok(args)
 }

@@ -1,5 +1,6 @@
-//! Progress reporting while tiles are processed in parallel: per-tile lines,
-//! a live strip showing which threads are busy, and a per-thread summary.
+//! Progress reporting while tiles download and are processed in parallel:
+//! a line per downloaded and per processed tile, a live strip showing which
+//! threads are busy, and a per-thread summary.
 //!
 //! Worker threads only touch atomics (lock-free counters), so reporting costs
 //! next to nothing compared with the work itself.
@@ -8,32 +9,47 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
 pub struct Progress {
-    total: usize,
     started: Instant,
-    done: AtomicUsize,
     finished: AtomicBool,
-    /// Per thread: working on a tile right now?
+    /// Tiles to download, and tiles to process (downloaded ones included).
+    to_download: usize,
+    to_process: usize,
+    downloaded: AtomicUsize,
+    processed: AtomicUsize,
+    /// Per processing thread: working on a tile right now?
     busy: Vec<AtomicBool>,
-    /// Per thread: tiles finished, and milliseconds spent on them.
+    /// Per processing thread: tiles finished, and milliseconds spent on them.
     tiles: Vec<AtomicUsize>,
     busy_ms: Vec<AtomicU64>,
 }
 
 impl Progress {
-    pub fn new(total: usize, threads: usize) -> Progress {
+    pub fn new(to_download: usize, to_process: usize, threads: usize) -> Progress {
         Progress {
-            total,
             started: Instant::now(),
-            done: AtomicUsize::new(0),
             finished: AtomicBool::new(false),
+            to_download,
+            to_process,
+            downloaded: AtomicUsize::new(0),
+            processed: AtomicUsize::new(0),
             busy: (0..threads).map(|_| AtomicBool::new(false)).collect(),
             tiles: (0..threads).map(|_| AtomicUsize::new(0)).collect(),
             busy_ms: (0..threads).map(|_| AtomicU64::new(0)).collect(),
         }
     }
 
-    /// Runs `work` for one tile on the current thread, keeping the counters
-    /// up to date, and prints its line (or error).
+    /// Reports one finished download (from a download thread).
+    pub fn downloaded(&self, tile: &str, report: &str) {
+        let done = self.downloaded.fetch_add(1, Relaxed) + 1;
+        println!(
+            "download [{done:>4}/{}] {tile}  {report} | {}",
+            self.to_download,
+            self.rate_and_eta(done, self.to_download)
+        );
+    }
+
+    /// Runs `work` for one tile on the current processing thread, keeping
+    /// the counters up to date, and prints its line (or returns its error).
     pub fn track<T>(&self, work: impl FnOnce() -> Result<String, T>) -> Result<(), T> {
         let thread = rayon::current_thread_index().unwrap_or(0);
         self.busy[thread].store(true, Relaxed);
@@ -43,12 +59,11 @@ impl Progress {
         self.tiles[thread].fetch_add(1, Relaxed);
         self.busy[thread].store(false, Relaxed);
 
-        let done = self.done.fetch_add(1, Relaxed) + 1;
+        let done = self.processed.fetch_add(1, Relaxed) + 1;
         let line = result?;
         println!(
-            "[{done:>5}/{}] cpu {thread:>2}  {line} | {}",
-            self.total,
-            self.rate_and_eta(done)
+            "process  [{done:>4}/{}] cpu {thread:>2}  {line}",
+            self.to_process
         );
         Ok(())
     }
@@ -69,12 +84,13 @@ impl Progress {
                 .map(|b| if b.load(Relaxed) { '█' } else { '·' })
                 .collect();
             let busy = strip.chars().filter(|c| *c == '█').count();
-            let done = self.done.load(Relaxed);
             println!(
-                "  CPUs {strip}  {busy}/{} busy | {done}/{} tiles, {}",
+                "  CPUs {strip}  {busy}/{} busy | downloaded {}/{}, processed {}/{}",
                 self.busy.len(),
-                self.total,
-                self.rate_and_eta(done)
+                self.downloaded.load(Relaxed),
+                self.to_download,
+                self.processed.load(Relaxed),
+                self.to_process,
             );
         }
     }
@@ -83,8 +99,13 @@ impl Progress {
         self.finished.store(true, Relaxed);
     }
 
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+
     /// Tiles per thread, and how much of the wall time the threads were busy.
-    /// Uneven counts or low utilisation mean work wasn't spread well.
+    /// While tiles are still downloading, threads mostly wait, so expect low
+    /// utilisation then: the downloads are the bottleneck, not the CPUs.
     pub fn print_summary(&self) {
         let tiles: Vec<String> = self
             .tiles
@@ -104,11 +125,11 @@ impl Progress {
         );
     }
 
-    fn rate_and_eta(&self, done: usize) -> String {
+    fn rate_and_eta(&self, done: usize, total: usize) -> String {
         let seconds = self.started.elapsed().as_secs_f64();
-        let rate = done as f64 / seconds;
-        let eta = (self.total - done) as f64 / rate.max(1e-9);
-        format!("{rate:.1} tiles/s, ETA {}", minutes_seconds(eta))
+        let per_minute = done as f64 / seconds * 60.0;
+        let eta = (total - done) as f64 / (per_minute / 60.0).max(1e-9);
+        format!("{per_minute:.0} tiles/min, ETA {}", minutes_seconds(eta))
     }
 }
 

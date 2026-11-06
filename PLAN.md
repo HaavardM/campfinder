@@ -89,16 +89,16 @@ plenty to keep 32 threads evenly busy. The extra border each tile reads
 pipeline/
   run.sh                 runs everything, skips finished work
   tents.toml
-  regions/*.env          one bbox per region (rondane, dovre, test)
-  01_download_water.sh   N50 water polygons for the region's counties, once each
-  02_download_tiles.sh   per tile: DTM from Kartverket's WCS + water mask
-  03_flatness.sh         Rust engine → 10 m results per tile and tent, QGIS mosaics
-  flatness/              the Rust crate
-  scaling.sh             speed at 1–32 threads
+  regions/*.env          one bbox + N50 counties per region (rondane, dovre, test*)
+  prepare_water.sh       N50 water polygons per county, once (GDAL's ogr2ogr)
+  flatness/              the Rust engine: downloads terrain tiles and processes
+                         them as they arrive; water masks with terrio (pure Rust)
+  04_load_cells.sh       results → PostGIS, then rebuild the map's bins
+  scaling.sh             speed at 1, 2, 4, … threads
 ```
 
-Next (phase 3): load the results into PostGIS (`COPY`) and export with
-`pg_dump` for the Mac.
+Runs natively on the Mac and on the WSL machine. Only `prepare_water.sh`
+needs GDAL, because N50 is published only as an Esri file geodatabase.
 
 Later: importing roads, buildings, land cover and protected areas, and
 computing distances to them, are added as extra steps.

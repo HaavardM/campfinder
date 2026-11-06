@@ -1,69 +1,59 @@
 # Pipeline
 
 Turns Kartverket's 1 m terrain model into "how flat is the best tent spot"
-per 10 m cell, for each tent in [tents.toml](tents.toml). Runs on the WSL
+per 10 m cell, for each tent in [tents.toml](tents.toml), and loads the
+results into PostGIS for the web app. Runs natively on the Mac or the WSL
 Debian machine.
 
 ## Run
 
-```sh
-./setup.sh        # once: GDAL tools, curl, GNU time, Rust
-./run.sh          # Rondane + Dovre; rerun any time, it only does new work
-```
-
-To try it end to end on a small area first (3 × 3 tiles around Mysusæter):
+Needs Rust (via rustup), GDAL's command-line tools (macOS: `brew install
+gdal`; Debian: `apt install gdal-bin`) and the database (`docker compose up
+-d` in `../`).
 
 ```sh
-./run.sh regions/test.env
+./run.sh                               # Rondane + Dovre
+./run.sh regions/test.env              # a small area (3 × 3 tiles) to try first
+./run.sh regions/test-known.env        # Mysusæter, Smuksjøseter, Rondvassbu
+./run.sh --force regions/test.env      # recompute, e.g. after changing the code
 ```
 
-Then load the results into PostGIS for the web app (`PSQL=` points it at a
-database; by default the Docker Compose one in `../`):
-
-```sh
-./04_load_cells.sh   # cells → table `cell`, then rebuilds the map's `bin` table
-```
-
-On the Mac, without installing GDAL (GDAL steps run in Docker), straight
-into the local database:
-
-```sh
-./run_local.sh regions/test-known.env   # Mysusæter, Smuksjøseter, Rondvassbu
-```
+Rerun any time: finished tiles are skipped, downloaded ones reused. Ctrl-C is
+safe; the next run continues.
 
 What `run.sh` does:
 
-| Step | What | Time (estimate) |
+| Step | What | Time |
 |---|---|---|
-| `01_download_water.sh` | N50 map data for the counties in the region's `N50_COUNTIES` (0.2–0.7 GB each, once), lakes/rivers/sea into `data/water.gpkg` | a few min per county, once |
-| `02_download_tiles.sh` | For each 2 × 2 km tile: terrain from Kartverket's WCS (17 MB) and a water mask | ~6 MB/s in total, so ~3 s per tile |
-| `03_flatness.sh` | The Rust engine on every tile missing results, then QGIS mosaics | ~1 s per tile per core |
+| `prepare_water.sh` | Per N50 county the regions list (`N50_COUNTIES`): download (0.2–0.7 GB) and extract the water polygons into `data/n50/<county>.water.gpkg`, with GDAL | a few min per county, once |
+| `flatness` (Rust) | Downloads terrain tiles 4 at a time (17 MB each, from Kartverket's WCS) and processes each one as soon as it's there, on every CPU | downloads: ~6 MB/s in total, ~3 s per tile; processing: ~0.5 s per tile per core |
+| `gdalbuildvrt` | One mosaic per result, for QGIS | seconds |
+| `04_load_cells.sh` | New results into PostGIS, then rebuild the map's bins | ~0.15 s per file, plus the bins |
 
 Rondane + Dovre is about 1,300 tiles: ~22 GB of terrain data. Downloading is
-the slow part (about an hour, limited by Kartverket's server); processing
-should take a few minutes.
+the slow part (about an hour, limited by Kartverket's server); the CPUs keep
+up with it easily, so processing finishes with the last download.
 
-Every step prints progress. Downloads show each tile's speed and an ETA. The
-flatness engine shows which thread did each tile, and every 2 seconds a strip
-with one block per thread (`█` busy, `·` idle). At the end it shows tiles per
-thread and overall thread utilisation.
+The engine prints a line per downloaded tile (speed, ETA) and per processed
+tile (which thread, how long), and every 2 seconds a strip with one block
+per thread (`█` busy, `·` idle). At the end: tiles per thread and overall
+thread utilisation (low while waiting for downloads, which is expected).
 
 Data lands in `data/` (not in git):
 
 ```text
 data/
-  water.gpkg                  water polygons
-  dtm/E0220000_N6864000.tif   terrain, 2016 × 2016 px of 1 m (tile + 8 m border)
-  water/E0220000_N6864000.tif water mask on the same pixel grid
+  n50/34_Innlandet.water.gpkg  water polygons, one GeoPackage per county
+  dtm/E0220000_N6864000.tif    terrain, 2016 × 2016 px of 1 m (tile + 8 m border)
   flatness/
-    E0220000_N6864000/        results for one tile, 200 × 200 cells of 10 m
-      elevation.tif           mean elevation per cell
-      gamme-8-pc.slope.tif    best (lowest) max-slope of a placement in the cell, degrees
+    E0220000_N6864000/         results for one tile, 200 × 200 cells of 10 m
+      elevation.tif            mean elevation per cell
+      gamme-8-pc.slope.tif     best (lowest) max-slope of a placement in the cell, degrees
       keron-4-gt.slope.tif
-      keron-4-gt.heading.tif  compass bearing of that placement's long side
-      keron-4-gt.cells.csv    cells up to 10°, for the database (04_load_cells.sh)
-      keron-4-gt.done         marks the tent done, with the settings used
-    keron-4-gt.slope.vrt      mosaic of all tiles, for QGIS
+      keron-4-gt.heading.tif   compass bearing of that placement's long side
+      keron-4-gt.cells.csv     cells up to 10°, for the database
+      keron-4-gt.done          marks the tent done, with the settings used
+    keron-4-gt.slope.vrt       mosaic of all tiles, for QGIS
 ```
 
 ## Look at the results
@@ -81,12 +71,18 @@ was computed with, so changing either recomputes exactly what's affected.
   whole metres, clearance included.
 - **Bumpiness:** `--max-roughness-m` (default 0.1). A pixel sitting more than
   this above or below the average of its 3 × 3 neighbourhood counts as a rock
-  or hummock: `./03_flatness.sh --max-roughness-m 0.15`
+  or hummock: `./run.sh --max-roughness-m 0.15`
 
 ## How it works
 
 For each tile, the engine ([flatness/](flatness/), Rust):
 
+0. **Water mask** ([water.rs](flatness/src/water.rs)): the N50 water polygons
+   near the tile are burned into a 1 m grid with
+   [terrio](https://crates.io/crates/terrio) (a pure-Rust port of GDAL's
+   rasterizer, so the same pixels; 0.3 ms per tile). All polygons are loaded
+   into memory once per run, with a bounding box each to find the ones near
+   a tile.
 1. **Cost per 1 m pixel** ([terrain.rs](flatness/src/terrain.rs)): the slope in
    degrees (Horn's method, as `gdaldem slope`). Infinity where a tent can't
    stand: water, missing data, or rough ground.
@@ -108,8 +104,9 @@ For each tile, the engine ([flatness/](flatness/), Rust):
    best placement and heading.
 
 Tiles are independent, so [rayon](https://docs.rs/rayon) runs one tile per
-thread. Memory is about 190 MB per thread, so 32 threads fit in WSL's default
-16 GB.
+thread, taking tiles from a channel as the download threads deliver them
+(`par_bridge`). Memory is about 190 MB per thread, so 32 threads fit in WSL's
+default 16 GB.
 
 ## Performance
 
@@ -125,11 +122,15 @@ Measured on one thread of an Apple M-series Mac, one tile:
 
 All 90 tiles of `regions/test-known.env` take 7 s on the Mac's 10 threads.
 
+Run natively, not in Docker: on the Mac, Docker Desktop's virtual machine made
+the memory-heavy filter loops 4–20× slower (the code was vectorised just the
+same).
+
 ```sh
 cd flatness   # run cargo here, so .cargo/config.toml (target-cpu=native) applies
 cargo run --release --example bench -- ../data/dtm/<tile>.tif
 cargo test --release
-cd .. && ./scaling.sh   # same tiles at 1–32 threads: where does it stop scaling?
+cd .. && ./scaling.sh   # same tiles at 1, 2, 4, … threads: where does it stop scaling?
 ```
 
 ## Known limits
