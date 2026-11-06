@@ -1,0 +1,5 @@
+# Compile for the CPU we run on (AVX2 on the 5950X), so the compiler can use
+# its widest vector instructions. The binary then only runs on similar CPUs,
+# which is fine: it's built where it runs.
+[build]
+rustflags = ["-C", "target-cpu=native"]

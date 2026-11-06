@@ -1,0 +1,212 @@
+//! Processing one work tile: from elevation to "best slope per 10 m cell" for
+//! each tent.
+
+use crate::grid::Grid;
+use crate::rotate::{rotate, unrotate};
+use crate::sliding_max::{SlidingMax, rect_max};
+use crate::tents::Footprint;
+
+/// Work tiles are 2 × 2 km squares on a grid aligned to multiples of 2000 m
+/// in EPSG:25833 (UTM zone 33N). A tile is named after its south-west corner.
+pub const TILE_SIZE_M: usize = 2000;
+/// Each tile's terrain is downloaded with this much extra border, so a tent
+/// near the tile edge still sees the ground around it. Must match
+/// `BUFFER_M` in `01_download_dtm.sh`.
+pub const BUFFER_M: usize = 8;
+/// Terrain pixels per side of a downloaded tile (1 m pixels).
+pub const DTM_SIZE_PX: usize = TILE_SIZE_M + 2 * BUFFER_M;
+/// Results are summarised into cells of this size.
+pub const CELL_SIZE_M: usize = 10;
+pub const CELLS_PER_SIDE: usize = TILE_SIZE_M / CELL_SIZE_M;
+
+/// Rectangular tents are tried every 15°: 0°, 15°, …, 165°.
+const HEADING_STEP_DEG: usize = 15;
+
+/// For every pixel: the lowest "steepest slope under the tent" over all
+/// placements centred on that pixel, and the heading of that placement
+/// (compass bearing of the tent's long side, 0–165°; -1 for round tents).
+/// Infinity means no placement fits.
+pub struct Placement {
+    pub max_slope: Grid,
+    pub heading: Vec<i16>,
+}
+
+pub fn best_placement(cost: &Grid, footprint: &Footprint) -> Placement {
+    let mut scratch = SlidingMax::default();
+    match footprint {
+        Footprint::Round { rectangles } => {
+            // Max over a union of rectangles = max of each rectangle's max.
+            let mut max_slope = Grid::filled(cost.width, cost.height, f32::NEG_INFINITY);
+            for &(width, height) in rectangles {
+                let part = rect_max(cost, width, height, &mut scratch);
+                for (m, p) in max_slope.data.iter_mut().zip(&part.data) {
+                    *m = m.max(*p);
+                }
+            }
+            let heading = vec![-1; cost.data.len()];
+            Placement { max_slope, heading }
+        }
+        Footprint::Rectangle { width, length } => {
+            let mut best = Placement {
+                max_slope: Grid::filled(cost.width, cost.height, f32::INFINITY),
+                heading: vec![-1; cost.data.len()],
+            };
+            // In the rotated frame, the W×L and L×W filters are two headings
+            // 90° apart, so 6 rotations cover all 12 headings.
+            for angle in (0..90).step_by(HEADING_STEP_DEG) {
+                let rotated = rotate(cost, angle as f32);
+                // Long side along the rotated rows (u): compass bearing 90 + angle.
+                // Long side along the rotated columns (v): bearing angle.
+                for (u_len, v_len, bearing) in
+                    [(*length, *width, 90 + angle), (*width, *length, angle)]
+                {
+                    let filtered = rect_max(&rotated, u_len, v_len, &mut scratch);
+                    let candidate = unrotate(&filtered, angle as f32, cost.width, cost.height);
+                    for i in 0..candidate.data.len() {
+                        if candidate.data[i] < best.max_slope.data[i] {
+                            best.max_slope.data[i] = candidate.data[i];
+                            best.heading[i] = bearing as i16;
+                        }
+                    }
+                }
+            }
+            best
+        }
+    }
+}
+
+/// One tent's result for a tile, per 10 m cell (row-major, north row first).
+pub struct CellResult {
+    /// Lowest max-slope of any placement centred in the cell; NaN if none fit.
+    pub max_slope: Vec<f32>,
+    /// Heading of that placement; -1 if none fit or the tent is round.
+    pub heading: Vec<i16>,
+}
+
+/// Summarises a placement grid (with border) into 10 m cells: each cell
+/// keeps its best placement.
+pub fn summarise(placement: &Placement) -> CellResult {
+    let width = placement.max_slope.width;
+    let mut result = CellResult {
+        max_slope: vec![f32::NAN; CELLS_PER_SIDE * CELLS_PER_SIDE],
+        heading: vec![-1; CELLS_PER_SIDE * CELLS_PER_SIDE],
+    };
+    for cell_y in 0..CELLS_PER_SIDE {
+        for cell_x in 0..CELLS_PER_SIDE {
+            let mut best = f32::INFINITY;
+            let mut best_heading = -1;
+            for y in 0..CELL_SIZE_M {
+                for x in 0..CELL_SIZE_M {
+                    let px = BUFFER_M + cell_x * CELL_SIZE_M + x;
+                    let py = BUFFER_M + cell_y * CELL_SIZE_M + y;
+                    let value = placement.max_slope.data[py * width + px];
+                    if value < best {
+                        best = value;
+                        best_heading = placement.heading[py * width + px];
+                    }
+                }
+            }
+            let cell = cell_y * CELLS_PER_SIDE + cell_x;
+            if best.is_finite() {
+                result.max_slope[cell] = best;
+                result.heading[cell] = best_heading;
+            }
+        }
+    }
+    result
+}
+
+/// Mean elevation of each 10 m cell (tile border excluded).
+pub fn cell_elevation(elevation: &Grid) -> Vec<f32> {
+    let mut out = vec![f32::NAN; CELLS_PER_SIDE * CELLS_PER_SIDE];
+    for cell_y in 0..CELLS_PER_SIDE {
+        for cell_x in 0..CELLS_PER_SIDE {
+            let mut sum = 0.0;
+            for y in 0..CELL_SIZE_M {
+                for x in 0..CELL_SIZE_M {
+                    sum += elevation.get(
+                        BUFFER_M + cell_x * CELL_SIZE_M + x,
+                        BUFFER_M + cell_y * CELL_SIZE_M + y,
+                    );
+                }
+            }
+            out[cell_y * CELLS_PER_SIDE + cell_x] = sum / (CELL_SIZE_M * CELL_SIZE_M) as f32;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Steep ground (30°) with a flat strip (1°) about 5 px wide running
+    /// through the centre at the given compass bearing.
+    fn terrace(size: usize, bearing_deg: f32) -> Grid {
+        let mut cost = Grid::filled(size, size, 30.0);
+        let (sin, cos) = bearing_deg.to_radians().sin_cos();
+        let centre = (size as f32 - 1.0) / 2.0;
+        for y in 0..size {
+            for x in 0..size {
+                let east = x as f32 - centre;
+                let north = centre - y as f32;
+                // Distance from the line through the centre along the bearing.
+                let across = (east * cos - north * sin).abs();
+                if across <= 2.6 {
+                    cost.set(x, y, 1.0);
+                }
+            }
+        }
+        cost
+    }
+
+    #[test]
+    fn long_tent_finds_the_terrace_heading() {
+        // 16 px long: 15° off the terrace, its ends reach steep ground.
+        let footprint = Footprint::Rectangle {
+            width: 2,
+            length: 16,
+        };
+        for bearing in [0, 15, 30, 45, 60, 90, 105, 120, 135, 150, 165] {
+            let cost = terrace(41, bearing as f32);
+            let placement = best_placement(&cost, &footprint);
+            let centre = 20 * 41 + 20;
+            assert_eq!(placement.max_slope.data[centre], 1.0, "bearing {bearing}");
+            assert_eq!(
+                placement.heading[centre], bearing as i16,
+                "bearing {bearing}"
+            );
+        }
+    }
+
+    #[test]
+    fn long_tent_does_not_fit_across_the_terrace() {
+        let footprint = Footprint::Rectangle {
+            width: 2,
+            length: 14,
+        };
+        let placement = best_placement(&terrace(41, 0.0), &footprint);
+        // Every placement other than along the terrace crosses steep ground.
+        let centre = 20 * 41 + 20;
+        assert_eq!(placement.heading[centre], 0);
+        // Off the terrace no heading fits on 1° ground.
+        assert!(placement.max_slope.data[20 * 41 + 30] >= 30.0);
+    }
+
+    #[test]
+    fn round_tent_needs_room_in_every_direction() {
+        let footprint = Footprint::Round {
+            rectangles: vec![(5, 3), (3, 5)],
+        };
+        let mut cost = Grid::filled(21, 21, 2.0);
+        cost.set(12, 10, 25.0); // one steep pixel 2 px east of the centre
+        let placement = best_placement(&cost, &footprint);
+        assert_eq!(
+            placement.max_slope.get(10, 10),
+            25.0,
+            "disc reaches 2 px east"
+        );
+        assert_eq!(placement.max_slope.get(10, 15), 2.0, "far away is fine");
+        assert_eq!(placement.max_slope.get(0, 0), f32::INFINITY, "off the edge");
+    }
+}

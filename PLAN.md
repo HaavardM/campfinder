@@ -25,7 +25,7 @@ scale on many cores.
 | UI | shadcn/ui, Tailwind, MapLibre GL JS |
 | Database | PostgreSQL + PostGIS (Docker) |
 | Pipeline | Bash, GDAL tools, osm2pgsql, SQL |
-| Flatness engine | Rust: `gdal`, `ndarray`, `rayon` |
+| Flatness engine | Rust: `rayon` for threads, pure-Rust `tiff` for GeoTIFF, plain `Vec<f32>` grids |
 
 The pipeline runs on the WSL Debian box: AMD Ryzen 9 5950X (16 cores / 32
 threads, AVX2, no AVX-512) with 32 GB RAM, of which WSL gets 16 GB by
@@ -35,11 +35,12 @@ default. Results move to the Mac with `pg_dump` / `pg_restore`.
 
 | Data | Source | Used for |
 |---|---|---|
-| 1 m terrain model (DTM) | Kartverket, hoydedata.no | Flatness |
+| 1 m terrain model (DTM) | Kartverket, WCS `wcs.hoyde-dtm-nhm-25833` | Flatness |
+| Water (lakes, rivers, sea) | Kartverket N50 | Masked out of flatness |
 | Basemap | Kartverket topo and grey topo (WMTS) | Map background |
 | Place names | Kartverket place-name API | Search |
 | Later: roads, parking | OpenStreetMap (Geofabrik) | Where you can drive and park |
-| Later: buildings, water, bog | Kartverket N50 | Exclusions, 150 m rule |
+| Later: buildings, bog | Kartverket N50 | Exclusions, 150 m rule |
 | Later: land cover | NIBIO AR5 / AR50 | Prefer open heath |
 | Later: protected areas | Miljødirektoratet Naturbase | Show park rules |
 
@@ -50,20 +51,24 @@ Tents are defined in `pipeline/tents.toml`, either `round` (diameter) or
 guy lines. Starting with the Gamme 8 PC (round, 4.32 m) and the Keron 4 GT
 (5 × 2.1 m).
 
-For each tent, a tent-shaped window slides over the 1 m terrain. A placement
-passes if, under the tent:
+Each 1 m pixel gets a cost: its slope in degrees, or infinity if a tent
+can't stand there. That covers water (N50 mask), missing data, and rough
+ground: more than 0.1 m above or below the average of its 3×3 neighbours,
+like a rock or hummock. Measuring bumps against the neighbourhood average
+keeps them separate from slope; a raw "highest minus lowest under the tent"
+would reject a gentle 3° slope under a 6 m tent.
 
-- the steepest pixel is below the slope you choose in the UI, and
-- the highest and lowest points differ by at most 0.3 m (bumpiness, fixed in
-  the pipeline).
-
-Rectangular tents are tried at 12 headings (every 15°).
+For each tent, a tent-shaped window slides over the cost grid. The max
+under the window is the tent's steepest pixel, or infinity if anything
+under it is unusable. The UI then filters on that slope. Rectangular tents
+are tried at 12 headings (every 15°).
 
 **Making it fast.** "Max under a rectangle" is a row-wise max followed by a
-column-wise max. Running min/max (van Herk) costs 3 comparisons per pixel
-whatever the window size. Rotated tents are handled by rotating the terrain
-instead of the tent. Round tents are built from a few overlapping rectangles.
-Tiles are processed in parallel with `rayon`.
+column-wise max. Running max (van Herk / Gil-Werman) costs 3 comparisons per
+pixel whatever the window size. Rotated tents are handled by rotating the
+terrain instead of the tent. Round tents are built from a few overlapping
+rectangles. Tiles are processed in parallel with `rayon`. Details and
+measurements: [pipeline/README.md](pipeline/README.md).
 
 Results are summarised into **10 m cells**: for each cell and tent, the best
 slope and its heading.
@@ -82,14 +87,18 @@ plenty to keep 32 threads evenly busy. The extra border each tile reads
 
 ```text
 pipeline/
-  run.sh               runs everything, skips finished work
+  run.sh                 runs everything, skips finished work
   tents.toml
-  regions/*.env        one bbox per region (rondane, dovre, test)
-  01_download_dtm.sh   DTM tiles from hoydedata.no
-  02_flatness/         Rust crate: DTM → 10 m results per tile and tent
-  03_load_cells.sh     results → PostGIS (COPY)
-  04_export.sh         pg_dump for the Mac
+  regions/*.env          one bbox per region (rondane, dovre, test)
+  01_download_water.sh   N50 water polygons for Norway, once
+  02_download_tiles.sh   per tile: DTM from Kartverket's WCS + water mask
+  03_flatness.sh         Rust engine → 10 m results per tile and tent, QGIS mosaics
+  flatness/              the Rust crate
+  scaling.sh             speed at 1–32 threads
 ```
+
+Next (phase 3): load the results into PostGIS (`COPY`) and export with
+`pg_dump` for the Mac.
 
 Later: importing roads, buildings, land cover and protected areas, and
 computing distances to them, are added as extra steps.
