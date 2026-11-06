@@ -4,10 +4,14 @@ import type {
 	VectorTileSource,
 } from "maplibre-gl";
 
-// The flat-ground layer on the map, fed by our /tiles route: a smooth
-// surface of fitness scores, so the better the ground for the tent, the
-// greener the area.
+// The flat-ground layers on the map, fed by our /tiles route:
 //
+// - a smooth surface of fitness scores, so the better the ground for the
+//   tent, the greener the area;
+// - from zoom 15, the 10 m cells where the tent fits, for picking a spot.
+//   They fade in as the surface fades to a faint background.
+//
+// About the surface:
 // The tiles hold one point per bin (80 m at zoom 12, doubling with each zoom
 // out) with that bin's score. A MapLibre heatmap blurs every point into its
 // surroundings and adds the blurs up. Adding up is the catch: with the
@@ -92,7 +96,15 @@ export function showFlat(map: MaplibreMap, filter: FlatFilter) {
 			"heatmap-weight": ["get", "score"],
 			"heatmap-radius": radius(),
 			"heatmap-intensity": 0.9,
-			"heatmap-opacity": 0.75,
+			"heatmap-opacity": [
+				"interpolate",
+				["linear"],
+				["zoom"],
+				14.5,
+				0.75,
+				16,
+				0.25,
+			],
 			// Density is now the interpolated score: transparent where there's
 			// hardly any usable ground, deeper green the better it gets.
 			"heatmap-color": [
@@ -102,6 +114,31 @@ export function showFlat(map: MaplibreMap, filter: FlatFilter) {
 				0,
 				"rgba(0, 0, 0, 0)",
 				...SCORE_COLOURS.flat(),
+			],
+		},
+	});
+	map.addLayer({
+		id: "flat-cells",
+		type: "fill",
+		source: SOURCE,
+		"source-layer": "cells",
+		paint: {
+			"fill-opacity": ["interpolate", ["linear"], ["zoom"], 15, 0, 16, 0.7],
+			// Flattest ground darkest green, up to yellow at the max slope.
+			"fill-color": [
+				"interpolate",
+				["linear"],
+				["get", "slope"],
+				0,
+				"#00441b",
+				2,
+				"#238b45",
+				4,
+				"#74c476",
+				6,
+				"#c7e9c0",
+				MAX_SLOPE_DEG,
+				"#fee08b",
 			],
 		},
 	});

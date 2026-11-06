@@ -136,6 +136,7 @@ function ScoreLegend() {
 				<span>Some</span>
 				<span>Lots of flat ground</span>
 			</div>
+			<span>Zoom in close to see the exact spots.</span>
 		</div>
 	);
 }

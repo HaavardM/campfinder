@@ -17,9 +17,15 @@ import { sql } from "#/server/db";
 // zoom 12, but each covers a smaller area, so it holds only the points it
 // needs: enlarging one zoom-12 tile instead would make the map blur all of
 // its thousands of points with a huge radius.
+//
+// From zoom 15 a second layer, "cells", holds the 10 m cells where the tent
+// fits within maxSlope: the actual spots, for when you've zoomed in on an
+// area. (Two layers in one tile is just the two encoded layers one after
+// the other, hence the || below.)
 
 const MIN_ZOOM = 7;
 const MAX_BIN_ZOOM = 12;
+const CELLS_FROM_ZOOM = 15;
 const MAX_ZOOM = 16;
 
 export const Route = createFileRoute("/tiles/$z/$x/$y")({
@@ -41,7 +47,7 @@ export const Route = createFileRoute("/tiles/$z/$x/$y")({
 					return new Response(null, { status: 204 });
 				}
 
-				const [row] = await scoredBins(z, x, y, tent, maxSlope);
+				const [row] = await tile(z, x, y, tent, maxSlope);
 				return new Response(row.mvt, {
 					headers: {
 						"Content-Type": "application/vnd.mapbox-vector-tile",
@@ -54,13 +60,7 @@ export const Route = createFileRoute("/tiles/$z/$x/$y")({
 	},
 });
 
-function scoredBins(
-	z: number,
-	x: number,
-	y: number,
-	tent: string,
-	maxSlope: number,
-) {
+function tile(z: number, x: number, y: number, tent: string, maxSlope: number) {
 	// Bins double in size with each zoom level out: 80 m at zoom 12, 160 m
 	// at 11, … so they always look about the same size on screen.
 	const binZoom = Math.min(z, MAX_BIN_ZOOM);
@@ -100,6 +100,22 @@ function scoredBins(
 			       score::real AS score
 			FROM scored, tile
 			WHERE score > 0
+		),
+		cells AS (
+			-- The cells themselves, found through the primary key (tent, x, y)
+			-- with whole-metre ranges. Only from zoom 15: a tile is then about
+			-- 1 km across, a few thousand cells at most.
+			SELECT ST_AsMVTGeom(
+			           ST_Transform(ST_MakeEnvelope(c.x, c.y, c.x + 10, c.y + 10, 25833), 3857),
+			           tile.web) AS geom,
+			       c.max_slope_deg AS slope
+			FROM cell c, tile
+			WHERE ${z} >= ${CELLS_FROM_ZOOM}
+			  AND c.tent = ${tent}
+			  AND c.max_slope_deg <= ${maxSlope}
+			  AND c.x BETWEEN floor(ST_XMin(tile.utm))::int - 10 AND floor(ST_XMax(tile.utm))::int
+			  AND c.y BETWEEN floor(ST_YMin(tile.utm))::int - 10 AND floor(ST_YMax(tile.utm))::int
 		)
-		SELECT ST_AsMVT(points, 'scores') AS mvt FROM points`;
+		SELECT (SELECT ST_AsMVT(points, 'scores') FROM points)
+		    || (SELECT ST_AsMVT(cells, 'cells') FROM cells) AS mvt`;
 }
