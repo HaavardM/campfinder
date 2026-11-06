@@ -27,8 +27,9 @@ scale on many cores.
 | Pipeline | Bash, GDAL tools, osm2pgsql, SQL |
 | Flatness engine | Rust: `gdal`, `ndarray`, `rayon` |
 
-The pipeline runs on the WSL Debian box (32 cores). Results move to the Mac
-with `pg_dump` / `pg_restore`.
+The pipeline runs on the WSL Debian box: AMD Ryzen 9 5950X (16 cores / 32
+threads, AVX2, no AVX-512) with 32 GB RAM, of which WSL gets 16 GB by
+default. Results move to the Mac with `pg_dump` / `pg_restore`.
 
 ## Data sources
 
@@ -69,8 +70,15 @@ slope and its heading.
 
 ## Pipeline
 
-Work is done in fixed 5×5 km tiles. Each step skips work that's already done,
+Work is done in fixed 2×2 km tiles. Each step skips work that's already done,
 so `./run.sh` can be rerun any time.
+
+Why 2 km: a tile is 4 M pixels, 16 MB per `f32` grid, so a thread with its
+scratch grids needs roughly 150–200 MB. With 32 threads that's about 6 GB,
+which fits in WSL's default 16 GB. 5 km tiles would need about 1 GB per
+thread and wouldn't fit. Rondane and Dovre come to several hundred tiles,
+plenty to keep 32 threads evenly busy. The extra border each tile reads
+(about 4 m) costs well under 1%.
 
 ```text
 pipeline/
@@ -145,5 +153,4 @@ The focus is a flatness heatmap that's quick to explore.
 ## Open questions
 
 1. How much extra room the guy lines need (`clearance_m`, default 0.5 m).
-2. The WSL box's CPU model and RAM.
-3. Places in Rondane and Dovre you know well enough to judge the results.
+2. Places in Rondane and Dovre you know well enough to judge the results.
