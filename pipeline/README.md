@@ -35,7 +35,7 @@ What `run.sh` does:
 
 | Step | What | Time (estimate) |
 |---|---|---|
-| `01_download_water.sh` | N50 map data for Norway (4 GB, once), lakes/rivers/sea into `data/water.gpkg` | ~10 min once |
+| `01_download_water.sh` | N50 map data for the counties in the region's `N50_COUNTIES` (0.2–0.7 GB each, once), lakes/rivers/sea into `data/water.gpkg` | a few min per county, once |
 | `02_download_tiles.sh` | For each 2 × 2 km tile: terrain from Kartverket's WCS (17 MB) and a water mask | ~6 MB/s in total, so ~3 s per tile |
 | `03_flatness.sh` | The Rust engine on every tile missing results, then QGIS mosaics | ~1 s per tile per core |
 

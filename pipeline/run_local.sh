@@ -4,20 +4,16 @@
 #
 # Usage: ./run_local.sh [regions/x.env ...]   (default regions/test.env;
 #        needs `docker compose up -d` in ../ first)
-#
-# Water polygons come from all of Norway's N50 (4 GB, downloaded once), since
-# Dovrefjell reaches into Trøndelag and Møre og Romsdal. Set N50_URL to one
-# county's file to download less for a small area.
 set -euo pipefail
 cd "$(dirname "$0")"
 if [[ $# -gt 0 ]]; then regions=("$@"); else regions=(regions/test.env); fi
 
 GDAL_IMAGE=ghcr.io/osgeo/gdal:ubuntu-small-3.11.4
-in_gdal() { docker run --rm -v "$PWD:/pipeline" -w /pipeline -e N50_URL "$GDAL_IMAGE" "$@"; }
+in_gdal() { docker run --rm -v "$PWD:/pipeline" -w /pipeline "$GDAL_IMAGE" "$@"; }
 
-in_gdal ./01_download_water.sh
-for region in "${regions[@]}"; do
-  in_gdal ./02_download_tiles.sh "$region" # a path inside pipeline/
+for region in "${regions[@]}"; do # paths inside pipeline/
+  in_gdal ./01_download_water.sh "$region"
+  in_gdal ./02_download_tiles.sh "$region"
 done
 (cd flatness && cargo build --release --quiet) # inside the crate, for target-cpu=native
 flatness/target/release/flatness --tents tents.toml \

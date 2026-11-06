@@ -90,7 +90,7 @@ pipeline/
   run.sh                 runs everything, skips finished work
   tents.toml
   regions/*.env          one bbox per region (rondane, dovre, test)
-  01_download_water.sh   N50 water polygons for Norway, once
+  01_download_water.sh   N50 water polygons for the region's counties, once each
   02_download_tiles.sh   per tile: DTM from Kartverket's WCS + water mask
   03_flatness.sh         Rust engine → 10 m results per tile and tent, QGIS mosaics
   flatness/              the Rust crate

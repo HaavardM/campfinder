@@ -16,8 +16,8 @@ else
   done
 fi
 
-./01_download_water.sh
 for region in "${regions[@]}"; do
+  ./01_download_water.sh "$region"
   ./02_download_tiles.sh "$region"
 done
 ./03_flatness.sh
