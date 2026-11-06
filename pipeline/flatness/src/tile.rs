@@ -1,6 +1,7 @@
 //! Processing one work tile: from elevation to "best slope per 10 m cell" for
 //! each tent.
 
+use crate::geotiff::Georef;
 use crate::grid::Grid;
 use crate::rotate::{rotate, unrotate_each};
 use crate::sliding_max::rect_max;
@@ -16,13 +17,28 @@ pub const BUFFER_M: usize = 8;
 /// Terrain pixels per side of a downloaded tile (1 m pixels).
 pub const DTM_SIZE_PX: usize = TILE_SIZE_M + 2 * BUFFER_M;
 
-/// The box a tile's terrain and water mask cover: the tile plus its border,
-/// as (west, south, east, north) in EPSG:25833 metres. The terrain download
-/// and the water mask both use it, so their pixels line up exactly.
+/// The box a tile's terrain, surface and no-go mask cover: the tile plus its
+/// border, as (west, south, east, north) in EPSG:25833 metres. The downloads
+/// and the mask all use it, so their pixels line up exactly.
 pub fn bordered_box(east: u32, north: u32) -> (f64, f64, f64, f64) {
     let (east, north, border) = (east as f64, north as f64, BUFFER_M as f64);
     let size = TILE_SIZE_M as f64;
-    (east - border, north - border, east + size + border, north + size + border)
+    (
+        east - border,
+        north - border,
+        east + size + border,
+        north + size + border,
+    )
+}
+
+/// Where a bordered tile's 1 m pixels sit on the map, for its GeoTIFF.
+pub fn bordered_georef(east: u32, north: u32) -> Georef {
+    let (west, _, _, north) = bordered_box(east, north);
+    Georef {
+        west,
+        north,
+        pixel_size: 1.0,
+    }
 }
 /// Results are summarised into cells of this size.
 pub const CELL_SIZE_M: usize = 10;

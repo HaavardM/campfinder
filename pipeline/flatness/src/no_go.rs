@@ -1,10 +1,10 @@
-//! Water masks for tiles, burnt from N50's lake, river and sea polygons.
+//! No-go masks for tiles: where a tent may not go, burnt from polygons out
+//! of Kartverket's N50 map data.
 //!
-//! The terrain model alone can't tell a calm lake from flat ground (some
-//! lakes are flattened to one exact height, others aren't), so water comes
-//! from Kartverket's N50 map data: `prepare_water.sh` turns each county's
-//! N50 into a small GeoPackage of water polygons, read here with terrio
-//! (pure Rust, no GDAL needed).
+//! Some things the terrain model can't see, or can't tell from flat ground:
+//! a calm lake, a bog, a small stream, a cabin's 150 m of privacy, a field.
+//! `prepare_no_go.sh` collects them from N50 into a GeoPackage of polygons
+//! per region, read here with terrio (pure Rust, no GDAL needed).
 
 use std::path::Path;
 
@@ -13,9 +13,9 @@ use terrio::ops::rasterize::{Grid, RasterizeOptions, rasterize};
 use terrio::vector::BBox;
 use terrio::{DataType, Feature, Layer};
 
-/// All water polygons of the regions being processed, in memory. Read once
+/// All no-go polygons of the regions being processed, in memory. Read once
 /// and shared by every processing thread (it's only ever read).
-pub struct Water {
+pub struct NoGo {
     polygons: Vec<Feature>,
     /// Each polygon's bounding box, so a tile can find the polygons near it
     /// with a few comparisons instead of looking at their shapes.
@@ -23,30 +23,23 @@ pub struct Water {
     utm33: SpatialRef,
 }
 
-impl Water {
-    /// Loads the water polygons from the given GeoPackages (one per county,
-    /// made by `prepare_water.sh`), keeping only those that touch `area`
-    /// (west, south, east, north): a county is far bigger than a region.
-    pub fn load(
-        gpkgs: &[impl AsRef<Path>],
-        area: (f64, f64, f64, f64),
-    ) -> Result<Water, String> {
+impl NoGo {
+    /// Loads the polygons from the given GeoPackages (one per region, made by
+    /// `prepare_no_go.sh`, which already cuts them to the region).
+    pub fn load(gpkgs: &[impl AsRef<Path>]) -> Result<NoGo, String> {
         let (mut polygons, mut boxes) = (Vec::new(), Vec::new());
         for gpkg in gpkgs {
             let path = gpkg.as_ref().display().to_string();
             let dataset = terrio::open_vector(&path, &Default::default())
                 .map_err(|e| format!("{path}: {e}"))?;
             for polygon in dataset.layers.into_iter().flat_map(|l| l.features) {
-                let Some(b) = polygon.geometry.as_ref().and_then(|g| g.bbox()) else {
-                    continue;
-                };
-                if overlaps(&b, area) {
+                if let Some(b) = polygon.geometry.as_ref().and_then(|g| g.bbox()) {
                     polygons.push(polygon);
                     boxes.push(b);
                 }
             }
         }
-        Ok(Water {
+        Ok(NoGo {
             polygons,
             boxes,
             utm33: SpatialRef::from_epsg(25833).map_err(|e| e.to_string())?,
@@ -58,11 +51,11 @@ impl Water {
     }
 
     /// A `size` × `size` grid of 1 m pixels with its top-left corner at
-    /// (west, north) in EPSG:25833: 1 where water touches the pixel, 0
-    /// elsewhere.
+    /// (west, north) in EPSG:25833: 1 where a no-go polygon touches the
+    /// pixel, 0 elsewhere.
     pub fn mask(&self, west: f64, north: f64, size: usize) -> Result<Vec<u8>, String> {
         let tile = (west, north - size as f64, west + size as f64, north);
-        let mut near = Layer::new("water");
+        let mut near = Layer::new("no_go");
         near.features = self
             .polygons
             .iter()
@@ -84,7 +77,7 @@ impl Water {
             data_type: Some(DataType::U8),
             // Every pixel a polygon touches, not just those whose centre is
             // inside: better to lose a metre of shore than to pitch a tent
-            // in a lake.
+            // in a lake or a bog.
             all_touched: true,
             ..Default::default()
         };
@@ -93,7 +86,7 @@ impl Water {
             .raster
             .data_u8()
             .map(|pixels| pixels.to_vec())
-            .ok_or_else(|| "water mask is not 8-bit".to_string())
+            .ok_or_else(|| "no-go mask is not 8-bit".to_string())
     }
 }
 

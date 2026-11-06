@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The whole pipeline: water polygons, download + process, QGIS mosaics, and
+# The whole pipeline: no-go areas, download + process, QGIS mosaics, and
 # loading into PostGIS.
 #
 # Usage: ./run.sh [options] [regions/x.env ...]
@@ -20,8 +20,8 @@ if [[ " $* " != *".env "* ]]; then
   done
 fi
 
-# Both take the same arguments: prepare_water.sh skips the options.
-./prepare_water.sh "$@"
+# Both take the same arguments: prepare_no_go.sh skips the options.
+./prepare_no_go.sh "$@"
 cargo build --release --quiet --manifest-path flatness/Cargo.toml
 flatness/target/release/flatness "$@"
 

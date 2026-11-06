@@ -19,11 +19,11 @@ fn main() {
         .expect("usage: bench <terrain tile .tif>");
     let elevation = read_f32(Path::new(&path), DTM_SIZE_PX).unwrap();
     let megapixels = elevation.data.len() as f64 / 1e6;
-    let no_water = vec![0u8; elevation.data.len()];
+    let nothing_blocked = vec![0u8; elevation.data.len()];
     println!("{path}: {}×{} pixels\n", elevation.width, elevation.height);
 
     let cost = time("pixel_cost (slope, roughness)", megapixels, || {
-        pixel_cost(&elevation, &no_water, 0.1)
+        pixel_cost(&elevation, &nothing_blocked, 0.1)
     });
 
     for (w, h) in [(3, 6), (6, 6), (12, 12), (24, 24)] {

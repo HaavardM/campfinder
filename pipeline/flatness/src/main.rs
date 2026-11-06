@@ -3,11 +3,11 @@
 //!
 //!   flatness [options] regions/rondane.env regions/dovre.env
 //!
-//! 1. Loads the regions' water polygons (prepared per county by
-//!    `prepare_water.sh`).
-//! 2. Downloads the terrain tiles not on disk yet, a few at a time, and
-//!    processes every tile as soon as it's there. Downloading is the slow
-//!    part, so the CPUs keep up with the downloads.
+//! 1. Loads the regions' no-go polygons (water, bogs, near houses; prepared
+//!    per region by `prepare_no_go.sh`).
+//! 2. Downloads the terrain and surface tiles not on disk yet, a few at a
+//!    time, and processes every tile as soon as both are there. Downloading
+//!    is the slow part, so the CPUs keep up with the downloads.
 //! 3. Writes per tile: GeoTIFFs for QGIS and a CSV for the database.
 //!
 //! Reruns only do what's missing: finished tiles are skipped, downloaded
@@ -21,21 +21,22 @@ use std::process::exit;
 use std::sync::Mutex;
 use std::sync::mpsc;
 
-use flatness::download;
+use flatness::download::{self, Model};
 use flatness::geotiff::{self, Georef, write_atomic};
+use flatness::no_go::NoGo;
 use flatness::region::{Region, tile_name};
 use flatness::tents::{Footprint, Shape, Tent, TentsFile};
-use flatness::terrain::pixel_cost;
+use flatness::terrain::{mark_obstacles, pixel_cost};
 use flatness::tile::{
     BUFFER_M, CELL_SIZE_M, CELLS_PER_SIDE, CellResult, DTM_SIZE_PX, TILE_SIZE_M, best_placement,
     bordered_box, cell_elevation, summarise,
 };
-use flatness::water::Water;
 use progress::{Progress, minutes_seconds};
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
 const USAGE: &str = "usage: flatness [--tents tents.toml] [--data data] [--threads N] \
-                     [--downloads 8] [--max-roughness-m 0.1] [--force] REGION.env ...";
+                     [--downloads 8] [--max-roughness-m 0.1] [--max-object-height-m 0.5] \
+                     [--force] REGION.env ...";
 
 struct Args {
     regions: Vec<PathBuf>,
@@ -44,6 +45,7 @@ struct Args {
     threads: Option<usize>,
     downloads: usize,
     max_roughness_m: f32,
+    max_object_height_m: f32,
     force: bool,
 }
 
@@ -55,8 +57,11 @@ struct Setup {
     /// South-west corners of every tile of every region, each once
     /// (regions may overlap).
     tiles: BTreeSet<(u32, u32)>,
-    /// The regions' water polygons.
-    water: Water,
+    /// Where no tent may go, from the map.
+    no_go: NoGo,
+    /// How the no-go areas were made (`prepare_no_go.sh` writes it next to
+    /// each GeoPackage), so changing that redoes the tiles.
+    no_go_recipe: String,
 }
 
 /// One tile and the work it still needs.
@@ -64,7 +69,9 @@ struct Job {
     name: String,
     east: u32,
     north: u32,
+    /// Its terrain and surface model files.
     dtm: PathBuf,
+    dom: PathBuf,
     tents: Vec<usize>,
     needs_elevation: bool,
 }
@@ -81,7 +88,7 @@ fn main() {
     for &(east, north) in &setup.tiles {
         match plan(&setup, east, north) {
             None => done += 1,
-            Some(job) if job.dtm.exists() => on_disk.push(job),
+            Some(job) if job.dtm.exists() && job.dom.exists() => on_disk.push(job),
             Some(job) => to_download.push_back(job),
         }
     }
@@ -144,7 +151,7 @@ fn prepare() -> Result<Setup, String> {
         }
     }
 
-    for dir in ["dtm", "n50", "flatness"] {
+    for dir in [Model::Terrain.dir(), Model::Surface.dir(), "flatness"] {
         std::fs::create_dir_all(args.data.join(dir)).map_err(|e| e.to_string())?;
     }
     // Tent names for the database, so the app can show "Keron 4 GT" rather
@@ -155,42 +162,30 @@ fn prepare() -> Result<Setup, String> {
     }
     write_atomic(&args.data.join("flatness/tents.csv"), tents_csv.as_bytes())?;
 
-    let (mut tiles, mut counties) = (BTreeSet::new(), BTreeSet::new());
+    let (mut tiles, mut gpkgs, mut recipes) = (BTreeSet::new(), Vec::new(), BTreeSet::new());
     for path in &args.regions {
-        let region = Region::read(path)?;
-        tiles.extend(region.tiles());
-        counties.extend(region.n50_counties);
-    }
-    let mut gpkgs = Vec::new();
-    for county in &counties {
-        let gpkg = args.data.join(format!("n50/{county}.water.gpkg"));
-        if !gpkg.exists() {
-            return Err(format!(
-                "{}: missing; run ./prepare_water.sh with the region files first",
+        tiles.extend(Region::read(path)?.tiles());
+        let name = path.file_stem().unwrap_or_default().to_string_lossy();
+        let gpkg = args.data.join(format!("no-go/{name}.gpkg"));
+        let recipe = std::fs::read_to_string(gpkg.with_extension("recipe")).map_err(|_| {
+            format!(
+                "{}: missing; run ./prepare_no_go.sh with the region files first",
                 gpkg.display()
-            ));
-        }
+            )
+        })?;
+        recipes.insert(recipe.trim().to_string());
         gpkgs.push(gpkg);
     }
-    // Water is only needed within the tiles' bounding box.
-    let boxes = tiles.iter().map(|&(east, north)| bordered_box(east, north));
-    let area = boxes.fold(
-        (f64::MAX, f64::MAX, f64::MIN, f64::MIN),
-        |(w, s, e, n), (bw, bs, be, bn)| (w.min(bw), s.min(bs), e.max(be), n.max(bn)),
-    );
-    let water = Water::load(&gpkgs, area)?;
-    println!(
-        "{} water polygons from {}",
-        water.polygon_count(),
-        counties.into_iter().collect::<Vec<_>>().join(", ")
-    );
+    let no_go = NoGo::load(&gpkgs)?;
+    println!("{} no-go polygons", no_go.polygon_count());
 
     Ok(Setup {
         args,
         config,
         footprints,
         tiles,
-        water,
+        no_go,
+        no_go_recipe: recipes.into_iter().collect::<Vec<_>>().join("+"),
     })
 }
 
@@ -219,7 +214,7 @@ fn run(
                 loop {
                     let next = queue.lock().unwrap().pop_front();
                     let Some(job) = next else { break };
-                    match download::terrain_tile(job.east, job.north, &job.dtm) {
+                    match download_missing(&job) {
                         Ok(report) => {
                             progress.downloaded(&job.name, &report);
                             ready.send(job).unwrap();
@@ -249,6 +244,18 @@ fn run(
     failures.into_inner().unwrap()
 }
 
+/// Downloads whichever of a tile's terrain and surface files isn't on disk
+/// yet, one after the other, and returns a one-line report.
+fn download_missing(job: &Job) -> Result<String, String> {
+    let mut reports = Vec::new();
+    for (model, path) in [(Model::Terrain, &job.dtm), (Model::Surface, &job.dom)] {
+        if !path.exists() {
+            reports.push(download::tile(model, job.east, job.north, path)?);
+        }
+    }
+    Ok(reports.join(", "))
+}
+
 /// What a tile still needs, or None if it's done.
 fn plan(setup: &Setup, east: u32, north: u32) -> Option<Job> {
     let name = tile_name(east, north);
@@ -256,7 +263,7 @@ fn plan(setup: &Setup, east: u32, north: u32) -> Option<Job> {
     let tents: Vec<usize> = (0..setup.config.tents.len())
         .filter(|&t| {
             let done = std::fs::read_to_string(done_path(&out_dir, &setup.config.tents[t]));
-            let wanted = settings_used(&setup.footprints[t], setup.args.max_roughness_m);
+            let wanted = settings_used(&setup.footprints[t], setup);
             setup.args.force || done.ok() != Some(wanted)
         })
         .collect();
@@ -264,8 +271,16 @@ fn plan(setup: &Setup, east: u32, north: u32) -> Option<Job> {
     if tents.is_empty() && !needs_elevation {
         return None;
     }
+    let file = |model: Model| {
+        setup
+            .args
+            .data
+            .join(model.dir())
+            .join(format!("{name}.tif"))
+    };
     Some(Job {
-        dtm: setup.args.data.join("dtm").join(format!("{name}.tif")),
+        dtm: file(Model::Terrain),
+        dom: file(Model::Surface),
         name,
         east,
         north,
@@ -278,12 +293,21 @@ fn plan(setup: &Setup, east: u32, north: u32) -> Option<Job> {
 fn process(job: &Job, setup: &Setup) -> Result<String, String> {
     let started = std::time::Instant::now();
     let elevation = geotiff::read_f32(&job.dtm, DTM_SIZE_PX)?;
-    // The water mask covers the same pixels as the terrain: tile + border.
+    let surface = geotiff::read_f32(&job.dom, DTM_SIZE_PX)?;
+    // Where no tent can go whatever the slope: the map's no-go areas, and
+    // wherever something stands on the ground. The mask covers the same
+    // pixels as the terrain: tile + border.
     let (west, _, _, north) = bordered_box(job.east, job.north);
-    let water = setup
-        .water
+    let mut blocked = setup
+        .no_go
         .mask(west, north, DTM_SIZE_PX)
-        .map_err(|e| format!("{}: water mask: {e}", job.name))?;
+        .map_err(|e| format!("{}: no-go mask: {e}", job.name))?;
+    mark_obstacles(
+        &mut blocked,
+        &elevation,
+        &surface,
+        setup.args.max_object_height_m,
+    );
 
     let out_dir = setup.args.data.join("flatness").join(&job.name);
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
@@ -299,18 +323,18 @@ fn process(job: &Job, setup: &Setup) -> Result<String, String> {
     if job.needs_elevation {
         geotiff::write_f32(&out_dir.join(ELEVATION_FILE), n, n, &cell_heights, &at)?;
     }
-    let cost = pixel_cost(&elevation, &water, setup.args.max_roughness_m);
+    let cost = pixel_cost(&elevation, &blocked, setup.args.max_roughness_m);
     for &t in &job.tents {
         let tent = &setup.config.tents[t];
         let cells = summarise(&best_placement(&cost, &setup.footprints[t]));
         let file = |kind: &str| out_dir.join(format!("{}.{kind}", tent.slug()));
-        write_cells_csv(&file("cells.csv"), job, &tent.slug(), &cells, &cell_heights)?;
+        write_blocks_csv(&file("blocks.csv"), job, &tent.slug(), &cells)?;
         geotiff::write_f32(&file("slope.tif"), n, n, &cells.max_slope, &at)?;
         if let Shape::Rectangle { .. } = tent.shape {
             geotiff::write_i16(&file("heading.tif"), n, n, &cells.heading, &at)?;
         }
         // Written last: marks this tent as done, with these settings.
-        let settings = settings_used(&setup.footprints[t], setup.args.max_roughness_m);
+        let settings = settings_used(&setup.footprints[t], setup);
         write_atomic(&done_path(&out_dir, tent), settings.as_bytes())?;
     }
 
@@ -324,37 +348,70 @@ fn process(job: &Job, setup: &Setup) -> Result<String, String> {
     ))
 }
 
-/// Cells flatter than this are written to the CSV for the database. Steeper
-/// ones are useless for a tent and would only make the tables bigger.
+/// Cells up to this steep go to the database. Steeper ones are useless for
+/// a tent (and the map's slope slider stops here).
 const MAX_STORED_SLOPE_DEG: f32 = 10.0;
+/// The database stores cells in square blocks of this many per side (80 m),
+/// one row per block: a row per cell would spend more on Postgres's per-row
+/// overhead (~30 bytes) than on the data. Also the map's finest bins.
+const BLOCK_CELLS: usize = 8;
+/// Slopes are counted per 0.5° step for the map's score (the slider moves in
+/// 0.5° too): 20 steps reach MAX_STORED_SLOPE_DEG.
+const SLOPE_STEPS: usize = (MAX_STORED_SLOPE_DEG * 2.0) as usize;
+/// A cell's byte in a block when no tent fits or it's too steep to store.
+const NO_SPOT: u8 = 255;
 
-/// One row per usable 10 m cell, ready for Postgres `COPY`:
-/// tent, x, y (south-west corner, EPSG:25833), slope, heading, elevation.
-fn write_cells_csv(
-    path: &Path,
-    job: &Job,
-    tent: &str,
-    cells: &CellResult,
-    elevation: &[f32],
-) -> Result<(), String> {
+/// One row per 80 m block with at least one usable cell, ready for Postgres
+/// `COPY` into table `block` (see db/schema.sql): tent, block column and row
+/// (x / 80, y / 80 in EPSG:25833), the 64 cells' slopes as bytes, and how
+/// many cells are up to 0.5°, 1°, 1.5°, … steep.
+fn write_blocks_csv(path: &Path, job: &Job, tent: &str, cells: &CellResult) -> Result<(), String> {
     use std::fmt::Write;
-    let mut csv = String::from("tent,x,y,max_slope_deg,heading_deg,elevation_m\n");
-    for row in 0..CELLS_PER_SIDE {
-        for col in 0..CELLS_PER_SIDE {
-            let i = row * CELLS_PER_SIDE + col;
-            let slope = cells.max_slope[i];
-            if slope.is_nan() || slope > MAX_STORED_SLOPE_DEG {
-                continue; // nothing fits, or too steep
+    let block_m = BLOCK_CELLS * CELL_SIZE_M;
+    let blocks_per_side = CELLS_PER_SIDE / BLOCK_CELLS;
+    let mut csv = String::from("tent,bx,by,slopes,cells_up_to_step\n");
+    for block_row in 0..blocks_per_side {
+        for block_col in 0..blocks_per_side {
+            // Bytes go row by row from the block's south-west corner.
+            let mut slopes = [NO_SPOT; BLOCK_CELLS * BLOCK_CELLS];
+            // Element k: cells up to 0.5·(k + 1) degrees.
+            let mut up_to_step = [0u32; SLOPE_STEPS];
+            for r in 0..BLOCK_CELLS {
+                for c in 0..BLOCK_CELLS {
+                    // Cell rows count from the south here, but from the
+                    // north in `cells` (row 0 is the tile's northern edge).
+                    let row = CELLS_PER_SIDE - 1 - (block_row * BLOCK_CELLS + r);
+                    let slope = cells.max_slope[row * CELLS_PER_SIDE + block_col * BLOCK_CELLS + c];
+                    if slope.is_nan() || slope > MAX_STORED_SLOPE_DEG {
+                        continue; // nothing fits, or too steep
+                    }
+                    // Tenths of a degree, rounded up: never flatter than it is.
+                    let tenths = (slope * 10.0).ceil() as u8;
+                    slopes[r * BLOCK_CELLS + c] = tenths;
+                    // 0.1–0.5° → step 1, 0.6–1.0° → step 2, … (0° too → 1). The
+                    // cell counts for its own step and every steeper one, so
+                    // the map's score at a max slope is one array lookup:
+                    // cells up to 2° = element 4.
+                    let step = (tenths as usize).div_ceil(5).max(1);
+                    for count in &mut up_to_step[step - 1..] {
+                        *count += 1;
+                    }
+                }
             }
-            // Row 0 is the northern edge of the tile.
-            let x = job.east as usize + col * CELL_SIZE_M;
-            let y = job.north as usize + TILE_SIZE_M - (row + 1) * CELL_SIZE_M;
-            let heading = match cells.heading[i] {
-                -1 => String::new(), // empty = NULL: round tent
-                h => h.to_string(),
-            };
-            let height = elevation[i];
-            writeln!(csv, "{tent},{x},{y},{slope:.2},{heading},{height:.1}").unwrap();
+            if up_to_step[SLOPE_STEPS - 1] == 0 {
+                continue; // no spot in this block
+            }
+            let bx = job.east as usize / block_m + block_col;
+            let by = job.north as usize / block_m + block_row;
+            // bytea as hex ("\x0a1bff…"), the array as "{0,3,…}" in quotes.
+            let hex: String = slopes.iter().map(|b| format!("{b:02x}")).collect();
+            let counts: Vec<String> = up_to_step.iter().map(u32::to_string).collect();
+            writeln!(
+                csv,
+                "{tent},{bx},{by},\\x{hex},\"{{{}}}\"",
+                counts.join(",")
+            )
+            .unwrap();
         }
     }
     write_atomic(path, csv.as_bytes())
@@ -363,14 +420,24 @@ fn write_cells_csv(
 const ELEVATION_FILE: &str = "elevation.tif";
 
 /// The file marking a tent as done for a tile. It holds the settings the
-/// result was computed with, so changing a tent's size or the roughness
-/// limit makes the tile count as not done.
+/// result was computed with, so changing a tent's size or a limit makes the
+/// tile count as not done.
 fn done_path(out_dir: &Path, tent: &Tent) -> PathBuf {
     out_dir.join(format!("{}.done", tent.slug()))
 }
 
-fn settings_used(footprint: &Footprint, max_roughness_m: f32) -> String {
-    format!("{footprint:?} max_roughness_m={max_roughness_m}\n")
+/// The version of what the engine writes. Change it with any change to the
+/// output files or to how results are computed: it makes every tile count as
+/// not done, so they're all redone.
+const OUTPUT_FORMAT: u32 = 2;
+
+fn settings_used(footprint: &Footprint, setup: &Setup) -> String {
+    let args = &setup.args;
+    format!(
+        "{footprint:?} max_roughness_m={} max_object_height_m={} no_go={} \
+         output_format={OUTPUT_FORMAT}\n",
+        args.max_roughness_m, args.max_object_height_m, setup.no_go_recipe
+    )
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -384,6 +451,9 @@ fn parse_args() -> Result<Args, String> {
         // on a free service.
         downloads: 8,
         max_roughness_m: 0.1,
+        // Heather and grass stay below this; bushes, dwarf birch, boulders
+        // and trees don't.
+        max_object_height_m: 0.5,
         force: false,
     };
     let mut words = std::env::args().skip(1);
@@ -404,6 +474,11 @@ fn parse_args() -> Result<Args, String> {
                 args.max_roughness_m = value()?
                     .parse()
                     .map_err(|_| "--max-roughness-m must be a number")?
+            }
+            "--max-object-height-m" => {
+                args.max_object_height_m = value()?
+                    .parse()
+                    .map_err(|_| "--max-object-height-m must be a number")?
             }
             "--force" => args.force = true,
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),

@@ -11,8 +11,6 @@ pub struct Region {
     south: u32,
     east: u32,
     north: u32,
-    /// N50 county files with the region's water polygons, e.g. "34_Innlandet".
-    pub n50_counties: Vec<String>,
 }
 
 impl Region {
@@ -27,16 +25,15 @@ impl Region {
     /// ```
     pub fn read(path: &Path) -> Result<Region, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let value = |key: &str| -> Result<String, String> {
-            text.lines()
+        let number = |key: &str| -> Result<u32, String> {
+            let (_, value) = text
+                .lines()
                 .filter_map(|line| line.split_once('='))
                 .find(|(k, _)| k.trim() == key)
-                // Drop a trailing comment: `WEST=206000 # note` is valid bash.
-                .map(|(_, v)| v.split('#').next().unwrap().trim().trim_matches('"').to_string())
-                .ok_or(format!("{}: missing {key}", path.display()))
-        };
-        let number = |key: &str| -> Result<u32, String> {
-            value(key)?
+                .ok_or(format!("{}: missing {key}", path.display()))?;
+            // Drop a trailing comment: `WEST=206000 # note` is valid bash.
+            let value = value.split('#').next().unwrap().trim();
+            value
                 .parse()
                 .map_err(|_| format!("{}: {key} must be a whole number", path.display()))
         };
@@ -45,10 +42,6 @@ impl Region {
             south: number("SOUTH")?,
             east: number("EAST")?,
             north: number("NORTH")?,
-            n50_counties: value("N50_COUNTIES")?
-                .split_whitespace()
-                .map(String::from)
-                .collect(),
         };
         let step = TILE_SIZE_M as u32;
         if [region.west, region.south, region.east, region.north]
@@ -80,6 +73,12 @@ pub fn tile_name(east: u32, north: u32) -> String {
     format!("E{east:07}_N{north:07}")
 }
 
+/// The south-west corner back from a tile's name.
+pub fn parse_tile_name(name: &str) -> Option<(u32, u32)> {
+    let (east, north) = name.strip_prefix('E')?.split_once("_N")?;
+    Some((east.parse().ok()?, north.parse().ok()?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,7 +87,7 @@ mod tests {
     fn reads_a_region_file() {
         let region = Region::read(Path::new("../regions/test.env")).unwrap();
         assert_eq!(region.tiles().len(), 9);
-        assert_eq!(region.n50_counties, ["34_Innlandet"]);
         assert_eq!(tile_name(220000, 6864000), "E0220000_N6864000");
+        assert_eq!(parse_tile_name("E0220000_N6864000"), Some((220000, 6864000)));
     }
 }

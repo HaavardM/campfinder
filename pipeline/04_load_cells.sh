@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Loads the engine's per-tile CSVs into PostGIS (table `cell`, see
+# Loads the engine's per-tile CSVs into PostGIS (table `block`, see
 # ../db/schema.sql), then rebuilds the bins the map reads (../db/bins.sql).
 #
 # Files already loaded with the same modification time (recorded in table
-# `cell_load`) are skipped, so a rerun only loads what changed. Each file
+# `block_load`) are skipped, so a rerun only loads what changed. Each file
 # replaces its tile in its own transaction.
 #
 # Usage: ./04_load_cells.sh
@@ -11,7 +11,8 @@
 #                                 Docker Compose database in ../)
 set -euo pipefail
 cd "$(dirname "$0")"
-TILE_M=2000 # tile size: must match TILE_SIZE_M in flatness/src/tile.rs
+TILE_M=2000  # tile size: must match TILE_SIZE_M in flatness/src/tile.rs
+BLOCK_M=80   # block size: 8 cells of 10 m, as in flatness/src/main.rs
 
 PSQL="${PSQL:-docker compose -f ../docker-compose.yml exec -T db psql -U campfinder}"
 psql_run() { $PSQL -q -v ON_ERROR_STOP=1 "$@"; }
@@ -22,15 +23,15 @@ psql_run < ../db/schema.sql
 psql_run -1 \
   -c "DELETE FROM tent" \
   -c "\copy tent (slug, name) FROM pstdin WITH (FORMAT csv, HEADER)" \
-  -c "DELETE FROM cell WHERE tent NOT IN (SELECT slug FROM tent)" \
+  -c "DELETE FROM block WHERE tent NOT IN (SELECT slug FROM tent)" \
   < data/flatness/tents.csv
 
 # What's already loaded, as "tile tent mtime" lines.
-loaded=$($PSQL -At -F ' ' -c "SELECT tile, tent, csv_mtime FROM cell_load")
+loaded=$($PSQL -At -F ' ' -c "SELECT tile, tent, csv_mtime FROM block_load")
 pending=()
-for csv in data/flatness/E*/*.cells.csv; do
+for csv in data/flatness/E*/*.blocks.csv; do
   tile=$(basename "$(dirname "$csv")")
-  tent=$(basename "$csv" .cells.csv)
+  tent=$(basename "$csv" .blocks.csv)
   grep -qxF "$tile $tent $(date -r "$csv" +%s)" <<< "$loaded" || pending+=("$csv")
 done
 echo "${#pending[@]} tile files to load"
@@ -44,22 +45,25 @@ if ((${#pending[@]} > 0)); then
   for csv in "${pending[@]}"; do
     count=$((count + 1))
     tile=$(basename "$(dirname "$csv")")
-    tent=$(basename "$csv" .cells.csv)
+    tent=$(basename "$csv" .blocks.csv)
     east=$((10#${tile:1:7})) # "E0220000_N6864000" → 220000
     north=$((10#${tile:10:7}))
     echo "BEGIN;"
-    echo "DELETE FROM cell WHERE tent = '$tent'"
-    echo "  AND x >= $east AND x < $((east + TILE_M)) AND y >= $north AND y < $((north + TILE_M));"
-    echo "COPY cell (tent, x, y, max_slope_deg, heading_deg, elevation_m) FROM STDIN WITH (FORMAT csv, HEADER);"
+    echo "DELETE FROM block WHERE tent = '$tent'"
+    echo "  AND bx >= $((east / BLOCK_M)) AND bx < $(((east + TILE_M) / BLOCK_M))"
+    echo "  AND by >= $((north / BLOCK_M)) AND by < $(((north + TILE_M) / BLOCK_M));"
+    echo "COPY block (tent, bx, by, slopes, cells_up_to_step) FROM STDIN WITH (FORMAT csv, HEADER);"
     cat "$csv"
     echo '\.'
-    echo "INSERT INTO cell_load VALUES ('$tile', '$tent', $(date -r "$csv" +%s))"
+    echo "INSERT INTO block_load VALUES ('$tile', '$tent', $(date -r "$csv" +%s))"
     echo "  ON CONFLICT (tile, tent) DO UPDATE SET csv_mtime = excluded.csv_mtime;"
     echo "COMMIT;"
     printf '\\echo [%d/%d] loaded %s %s\n' "$count" "${#pending[@]}" "$tile" "$tent" # psql prints this
   done | psql_run
   echo "Loaded in $(($(date +%s) - start)) s. Rebuilding bins..."
+  psql_run -c "ANALYZE block" # fresh statistics for the map's queries
   psql_run < ../db/bins.sql
 fi
 
-$PSQL -c "SELECT tent, count(*) AS cells FROM cell GROUP BY tent ORDER BY tent"
+$PSQL -c "SELECT tent, count(*) AS blocks FROM block GROUP BY tent ORDER BY tent" \
+  -c "SELECT pg_size_pretty(pg_database_size(current_database())) AS database_size"

@@ -36,11 +36,11 @@ default. Results move to the Mac with `pg_dump` / `pg_restore`.
 | Data | Source | Used for |
 |---|---|---|
 | 1 m terrain model (DTM) | Kartverket, WCS `wcs.hoyde-dtm-nhm-25833` | Flatness |
-| Water (lakes, rivers, sea) | Kartverket N50 | Masked out of flatness |
+| 1 m surface model (DOM) | Kartverket, WCS `wcs.hoyde-dom-nhm-25833` | Bushes, trees, boulders: DOM − DTM > 0.5 m blocks |
+| Water, bogs, streams, farmland, buildings | Kartverket N50 | No-go areas (150 m around houses and cabins) |
 | Basemap | Kartverket topo and grey topo (WMTS) | Map background |
 | Place names | Kartverket place-name API | Search |
 | Later: roads, parking | OpenStreetMap (Geofabrik) | Where you can drive and park |
-| Later: buildings, bog | Kartverket N50 | Exclusions, 150 m rule |
 | Later: land cover | NIBIO AR5 / AR50 | Prefer open heath |
 | Later: protected areas | Miljødirektoratet Naturbase | Show park rules |
 
@@ -52,7 +52,8 @@ guy lines. Starting with the Gamme 8 PC (round, 4.32 m) and the Keron 4 GT
 (5 × 2.1 m).
 
 Each 1 m pixel gets a cost: its slope in degrees, or infinity if a tent
-can't stand there. That covers water (N50 mask), missing data, and rough
+can't stand there. That covers no-go areas (N50: water, bogs, near houses),
+anything standing on the ground (surface model), missing data, and rough
 ground: more than 0.1 m above or below the average of its 3×3 neighbours,
 like a rock or hummock. Measuring bumps against the neighbourhood average
 keeps them separate from slope; a raw "highest minus lowest under the tent"
@@ -89,15 +90,15 @@ plenty to keep 32 threads evenly busy. The extra border each tile reads
 pipeline/
   run.sh                 runs everything, skips finished work
   tents.toml
-  regions/*.env          one bbox + N50 counties per region (rondane, dovre, test*)
-  prepare_water.sh       N50 water polygons per county, once (GDAL's ogr2ogr)
-  flatness/              the Rust engine: downloads terrain tiles and processes
-                         them as they arrive; water masks with terrio (pure Rust)
+  regions/*.env          one bbox + N50 counties per hiking area (and test*)
+  prepare_no_go.sh       N50 no-go polygons per region, once (GDAL's ogr2ogr)
+  flatness/              the Rust engine: downloads terrain and surface tiles and
+                         processes them as they arrive; no-go masks with terrio
   04_load_cells.sh       results → PostGIS, then rebuild the map's bins
   scaling.sh             speed at 1, 2, 4, … threads
 ```
 
-Runs natively on the Mac and on the WSL machine. Only `prepare_water.sh`
+Runs natively on the Mac and on the WSL machine. Only `prepare_no_go.sh`
 needs GDAL, because N50 is published only as an Esri file geodatabase.
 
 Later: importing roads, buildings, land cover and protected areas, and
@@ -108,23 +109,32 @@ computing distances to them, are added as extra steps.
 See [db/schema.sql](db/schema.sql).
 
 ```sql
-tent (slug, name)
-cell (tent, x, y, max_slope_deg, heading_deg, elevation_m)   -- 10 m cells ≤ 10°
-bin  (tent, zoom, bx, by, step, cells)   -- cells counted per bin and 0.5° slope step
+tent  (slug, name)
+block (tent, bx, by, slopes, cells_up_to_step) -- 80 m blocks of 8 × 8 cells ≤ 10°
+bin   (tent, zoom, bx, by, cells_up_to_step)   -- blocks summed into larger bins
 ```
 
-`bin` is rebuilt after each load ([db/bins.sql](db/bins.sql)): 80 m bins at
-zoom 12, each zoom out merging 2 × 2. Map tiles read only `bin`, so a tile
-costs the same however much data there is.
+Sized to what the map reads. A block row holds its 64 cells' slopes as one
+byte each (tenths of a degree) and how many cells are up to 0.5°, 1°, …, so the
+database spends its space on data rather than on Postgres's ~30 bytes of
+per-row overhead: 9 GB as a row per cell became about 0.5 GB, 19× less.
+Heading and elevation stay in the GeoTIFFs for QGIS.
+
+`bin` is rebuilt after each load ([db/bins.sql](db/bins.sql)): 160 m bins
+at zoom 11 from the blocks, each zoom out merging 2 × 2. Zoomed-out tiles
+read only the step counts, so a tile costs the same however much data
+there is.
 
 ## Web app
 
-The map shows **areas, not exact spots**: a smooth surface of a fitness
-score, greener where the ground is better for the chosen tent.
+Zoomed out, the map shows **areas worth looking at**: a smooth surface,
+greener where there are more spots for the chosen tent. Zoomed in (from
+zoom 14), it shows the spots themselves, merged into orange areas.
 
-- **Score per bin:** the average over its 10 m cells of 1 where the tent
-  fits at ≤ 1°, falling linearly to 0 at the chosen max slope (0 where it
-  doesn't fit).
+- **Spot:** a 10 m cell where the tent fits within the chosen max slope.
+- **Score per bin:** the square root of the share of its cells that are
+  spots. A tent needs one spot, not a meadow; the square root lifts bins
+  with only a few spots into view.
 - **Smooth surface:** one point per bin, drawn as a MapLibre heatmap whose
   blur is normalised to a weighted average of nearby scores, so it
   interpolates rather than piling up (see `web/src/lib/flat-layers.ts`).
@@ -140,14 +150,15 @@ score, greener where the ground is better for the chosen tent.
    spots you know.
 3. **Heatmap.** Vector tiles, tent and slope controls, cells when zoomed in.
 4. **Spot details.** Click a cell to see its details and tent outline.
-5. **Later.** Roads and parking with distance filters, exclusions
-   (buildings, water, bog, protected areas), saved spots, more regions,
-   walking distance over trails.
+5. **Later.** Roads and parking with distance filters, small ponds (from
+   the lidar), protected-area rules, saved spots, walking distance over
+   trails.
 
 ## Caveats
 
-- Lidar sees bare ground, so small rocks and wet ground may not show up.
-  Results mean "worth checking".
+- Small ponds, wet ground and objects under 0.5 m may not show up, and
+  N50's bogs and streams are only accurate to several metres. Results mean
+  "worth checking".
 - Allemannsretten: at least 150 m from houses and cabins. Parks may have
   their own rules.
 - OSM road access tags are incomplete; check before driving.

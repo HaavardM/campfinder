@@ -25,12 +25,18 @@ What `run.sh` does:
 
 | Step | What | Time |
 |---|---|---|
-| `prepare_water.sh` | Per N50 county the regions list (`N50_COUNTIES`): download (0.2–0.7 GB) and extract the water polygons into `data/n50/<county>.water.gpkg`, with GDAL | a few min per county, once |
-| `flatness` (Rust) | Downloads terrain tiles 4 at a time (17 MB each, from Kartverket's WCS) and processes each one as soon as it's there, on every CPU | downloads: ~6 MB/s in total, ~3 s per tile; processing: ~0.5 s per tile per core |
+| `prepare_no_go.sh` | Per region: download the N50 map data of its counties (`N50_COUNTIES`, 0.2–0.7 GB each, once) and collect where no tent may go into `data/no-go/<region>.gpkg`, with GDAL: water, bogs, streams (+2 m), farmland, and 150 m around houses, cabins and built-up areas | a few seconds per county, once per region |
+| `flatness` (Rust) | Downloads terrain and surface tiles 8 at a time (17 MB each, from Kartverket's WCS) and processes each tile as soon as both are there, on every CPU | downloads: ~8 s per file and connection; processing: ~0.5 s per tile per core |
 | `gdalbuildvrt` | One mosaic per result, for QGIS | seconds |
 | `04_load_cells.sh` | New results into PostGIS, then rebuild the map's bins | ~0.15 s per file, plus the bins |
 
-Rondane + Dovre is about 1,300 tiles: ~22 GB of terrain data. Downloading is
+Downloaded tiles are stored compressed without loss, about 7.5 MB instead of
+16.8 (deflate after TIFF's floating-point predictor; see
+[geotiff.rs](flatness/src/geotiff.rs)). Tiles downloaded before that can be
+compressed in place, safely next to a running pipeline:
+`(cd flatness && cargo run --release --example compress_tiles -- ../data/dtm ../data/dom)`.
+
+Rondane + Dovre is about 1,300 tiles: ~20 GB of terrain and surface data. Downloading is
 the slow part, under an hour. Kartverket's server builds each tile on
 request, ~8 s per tile and connection, so the engine downloads 8 at once
 (tiles larger than 2 km time out). The CPUs keep up with it easily, so
@@ -47,15 +53,18 @@ Data lands in `data/` (not in git):
 
 ```text
 data/
-  n50/34_Innlandet.water.gpkg  water polygons, one GeoPackage per county
+  n50/Basisdata_34_…_FGDB.zip  Kartverket's N50 map data, per county
+  no-go/rondane.gpkg           where no tent may go, one GeoPackage per region
+  no-go/rondane.recipe         fingerprint of the queries that made it
   dtm/E0220000_N6864000.tif    terrain, 2016 × 2016 px of 1 m (tile + 8 m border)
+  dom/E0220000_N6864000.tif    surface (treetops, bushes, roofs), same pixels
   flatness/
     E0220000_N6864000/         results for one tile, 200 × 200 cells of 10 m
       elevation.tif            mean elevation per cell
       gamme-8-pc.slope.tif     best (lowest) max-slope of a placement in the cell, degrees
       keron-4-gt.slope.tif
       keron-4-gt.heading.tif   compass bearing of that placement's long side
-      keron-4-gt.cells.csv     cells up to 10°, for the database
+      keron-4-gt.blocks.csv    cells up to 10° in 80 m blocks, for the database
       keron-4-gt.done          marks the tent done, with the settings used
     keron-4-gt.slope.vrt       mosaic of all tiles, for QGIS
 ```
@@ -68,28 +77,36 @@ know before trusting the rest.
 
 ## Tuning
 
-Each tile's `.done` file records the tent footprint and roughness limit it
-was computed with, so changing either recomputes exactly what's affected.
+Each tile's `.done` file records the tent footprint, limits and no-go
+recipe it was computed with, so changing any of them recomputes exactly
+what's affected.
 
 - **Tents:** edit [tents.toml](tents.toml) and rerun. Sizes are rounded to
   whole metres, clearance included.
 - **Bumpiness:** `--max-roughness-m` (default 0.1). A pixel sitting more than
   this above or below the average of its 3 × 3 neighbourhood counts as a rock
   or hummock: `./run.sh --max-roughness-m 0.15`
+- **Bushes and trees:** `--max-object-height-m` (default 0.5). Anything
+  standing higher than this on the ground blocks a pixel. Heather and grass
+  stay below; dwarf birch, bushes, boulders and trees don't.
+- **No-go areas:** edit the queries in [prepare_no_go.sh](prepare_no_go.sh)
+  and rerun; the regions' GeoPackages and tiles are redone.
 
 ## How it works
 
 For each tile, the engine ([flatness/](flatness/), Rust):
 
-0. **Water mask** ([water.rs](flatness/src/water.rs)): the N50 water polygons
-   near the tile are burned into a 1 m grid with
-   [terrio](https://crates.io/crates/terrio) (a pure-Rust port of GDAL's
-   rasterizer, so the same pixels; 0.3 ms per tile). All polygons are loaded
-   into memory once per run, with a bounding box each to find the ones near
-   a tile.
+0. **Blocked pixels:** the region's no-go polygons near the tile are burned
+   into a 1 m grid ([no_go.rs](flatness/src/no_go.rs)) with
+   [terrio](https://crates.io/crates/terrio), a pure-Rust port of GDAL's
+   rasterizer, so the same pixels. All polygons are loaded into memory once
+   per run, with a bounding box each to find the ones near a tile. Then
+   every pixel where the surface model is more than 0.5 m above the terrain
+   is blocked too ([terrain.rs](flatness/src/terrain.rs)): something stands
+   there.
 1. **Cost per 1 m pixel** ([terrain.rs](flatness/src/terrain.rs)): the slope in
    degrees (Horn's method, as `gdaldem slope`). Infinity where a tent can't
-   stand: water, missing data, or rough ground.
+   stand: blocked, missing data, or rough ground.
 2. **Steepest pixel under each tent placement**
    ([sliding_max.rs](flatness/src/sliding_max.rs)): a sliding-window maximum.
    Because unusable pixels are infinitely steep, this one number answers both
@@ -139,11 +156,14 @@ cd .. && ./scaling.sh   # same tiles at 1, 2, 4, … threads: where does it stop
 
 ## Known limits
 
-- **Bog is not excluded.** It's flat, and frozen bog can be a fine winter
-  spot. It will become a filter later.
-- **Water comes from N50**, mapped at 1:50 000, so small ponds and stream
-  edges can be off by a few metres. Lakes that the terrain model flattens to
-  one exact height are caught as well.
+- **No-go areas come from N50**, mapped at 1:50 000: bog and stream edges
+  can be off by several metres, and small ponds are missing. Lakes that the
+  terrain model flattens to one exact height are caught as well. (The
+  detailed FKB maps need a Norge digitalt licence.)
+- **Bog is always excluded**, though frozen bog can be a fine winter spot.
+- **Buildings by type:** the 150 m rule covers houses, cabins, summer farms
+  and mountain huts (types 111–179), not barns, garages or tourist huts.
 - **Angled headings are slightly conservative** (about 1 m) because of how
   the rotated grid is sampled, so no rock is ever skipped.
-- Lidar sees bare ground, not boulders under ~30 cm, wet ground or brush.
+- **Objects under 0.5 m** (small boulders, low scrub) and wet ground the map
+  doesn't mark as bog aren't seen.

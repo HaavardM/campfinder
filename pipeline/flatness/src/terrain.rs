@@ -6,21 +6,21 @@ use crate::grid::Grid;
 /// Cost of each 1 m pixel of the terrain model:
 ///
 /// - slope in degrees, if the pixel is usable;
-/// - infinity for rough ground, water, missing data and the outermost pixels
-///   (which lack a full neighbourhood).
+/// - infinity for rough ground, blocked pixels, missing data and the
+///   outermost pixels (which lack a full neighbourhood).
 ///
 /// Making unusable pixels "infinitely steep" means a single sliding max of
 /// this grid answers both questions for a tent footprint: how steep is it,
 /// and is anything under it unusable?
 ///
-/// `water` is a mask on the same pixel grid: non-zero where N50 maps a lake,
-/// river or sea.
-pub fn pixel_cost(elevation: &Grid, water: &[u8], max_roughness_m: f32) -> Grid {
-    assert_eq!(water.len(), elevation.data.len());
+/// `blocked` is a mask on the same pixel grid: non-zero where a tent can't
+/// go whatever the slope (water, bogs, bushes, …).
+pub fn pixel_cost(elevation: &Grid, blocked: &[u8], max_roughness_m: f32) -> Grid {
+    assert_eq!(blocked.len(), elevation.data.len());
     let mut cost = Grid::filled(elevation.width, elevation.height, f32::INFINITY);
     for y in 1..elevation.height - 1 {
         for x in 1..elevation.width - 1 {
-            if water[y * elevation.width + x] != 0 {
+            if blocked[y * elevation.width + x] != 0 {
                 continue;
             }
             // The 3×3 neighbourhood, named row by row:
@@ -70,11 +70,28 @@ pub fn pixel_cost(elevation: &Grid, water: &[u8], max_roughness_m: f32) -> Grid 
     cost
 }
 
+/// Blocks the pixels where something stands on the ground higher than
+/// `max_height_m`: trees, bushes, boulders, buildings.
+///
+/// Kartverket's two lidar models differ in what they show: the terrain model
+/// (DTM) is the bare ground, with everything on it removed; the surface
+/// model (DOM) is the first thing the laser hit, so treetops and roofs.
+/// Their difference is the height of whatever stands on the ground. Where
+/// the surface is missing (NaN), the comparison is false: nothing blocked.
+pub fn mark_obstacles(blocked: &mut [u8], elevation: &Grid, surface: &Grid, max_height_m: f32) {
+    assert_eq!(surface.data.len(), elevation.data.len());
+    for ((b, ground), top) in blocked.iter_mut().zip(&elevation.data).zip(&surface.data) {
+        if top - ground > max_height_m {
+            *b = 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const NO_WATER: [u8; 100] = [0; 100];
+    const NOTHING_BLOCKED: [u8; 100] = [0; 100];
 
     /// A plane tilted so it rises `rise` metres per metre towards the east.
     fn tilted_plane(size: usize, rise: f32) -> Grid {
@@ -90,7 +107,7 @@ mod tests {
     #[test]
     fn slope_of_a_plane() {
         let rise = 5f32.to_radians().tan(); // 5°
-        let cost = pixel_cost(&tilted_plane(10, rise), &NO_WATER, 0.1);
+        let cost = pixel_cost(&tilted_plane(10, rise), &NOTHING_BLOCKED, 0.1);
         assert!((cost.get(5, 5) - 5.0).abs() < 0.01, "{}", cost.get(5, 5));
         assert_eq!(cost.get(0, 5), f32::INFINITY, "edge pixels are unusable");
     }
@@ -99,31 +116,44 @@ mod tests {
     fn a_rock_is_unusable() {
         let mut elevation = tilted_plane(10, 0.02);
         elevation.set(5, 5, elevation.get(5, 5) + 0.4); // 40 cm rock
-        let cost = pixel_cost(&elevation, &NO_WATER, 0.1);
+        let cost = pixel_cost(&elevation, &NOTHING_BLOCKED, 0.1);
         assert_eq!(cost.get(5, 5), f32::INFINITY);
         assert!(cost.get(2, 2).is_finite());
     }
 
     #[test]
     fn a_flattened_lake_is_unusable() {
-        let cost = pixel_cost(&Grid::filled(10, 10, 853.9), &NO_WATER, 0.1);
+        let cost = pixel_cost(&Grid::filled(10, 10, 853.9), &NOTHING_BLOCKED, 0.1);
         assert!(cost.data.iter().all(|v| *v == f32::INFINITY));
     }
 
     #[test]
-    fn mapped_water_is_unusable() {
-        let mut water = NO_WATER;
-        water[5 * 10 + 5] = 1;
-        let cost = pixel_cost(&tilted_plane(10, 0.02), &water, 0.1);
+    fn blocked_pixels_are_unusable() {
+        let mut blocked = NOTHING_BLOCKED;
+        blocked[5 * 10 + 5] = 1;
+        let cost = pixel_cost(&tilted_plane(10, 0.02), &blocked, 0.1);
         assert_eq!(cost.get(5, 5), f32::INFINITY);
         assert!(cost.get(4, 5).is_finite());
+    }
+
+    #[test]
+    fn a_bush_blocks_but_grass_does_not() {
+        let ground = tilted_plane(10, 0.02);
+        let mut surface = ground.clone();
+        surface.set(5, 5, ground.get(5, 5) + 1.2); // a 1.2 m bush
+        surface.set(2, 2, ground.get(2, 2) + 0.2); // tall grass
+        surface.set(3, 3, f32::NAN); // no surface data
+        let mut blocked = NOTHING_BLOCKED;
+        mark_obstacles(&mut blocked, &ground, &surface, 0.5);
+        assert_eq!(blocked[5 * 10 + 5], 1);
+        assert_eq!(blocked.iter().map(|&b| b as u32).sum::<u32>(), 1);
     }
 
     #[test]
     fn missing_data_is_unusable() {
         let mut elevation = tilted_plane(10, 0.02);
         elevation.set(5, 5, f32::NAN);
-        let cost = pixel_cost(&elevation, &NO_WATER, 0.1);
+        let cost = pixel_cost(&elevation, &NOTHING_BLOCKED, 0.1);
         assert_eq!(cost.get(4, 4), f32::INFINITY);
         assert!(cost.get(2, 2).is_finite());
     }
