@@ -10,14 +10,14 @@ pub struct TentsFile {
     pub tents: Vec<Tent>,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize)]
 pub struct Tent {
     pub name: String,
     #[serde(flatten)]
     pub shape: Shape,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize)]
 #[serde(tag = "shape", rename_all = "lowercase")]
 pub enum Shape {
     Round { diameter_m: f32 },
@@ -38,7 +38,7 @@ impl Tent {
 
 /// The area a tent needs, in whole 1 m pixels (sizes are rounded to the
 /// nearest metre, clearance included).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum Footprint {
     /// A pixelated disc, described as overlapping centred rectangles
     /// (width, height). The max over a union of shapes is the max of each
@@ -98,7 +98,6 @@ fn disc_as_rectangles(diameter: usize) -> Vec<(usize, usize)> {
     widths.dedup();
     widths
         .into_iter()
-        .filter(|&w| w > 0)
         .map(|w| (w, row_widths.iter().filter(|&&rw| rw >= w).count()))
         .collect()
 }

@@ -2,16 +2,17 @@
 //! each tent.
 
 use crate::grid::Grid;
-use crate::rotate::{rotate, unrotate};
-use crate::sliding_max::{SlidingMax, rect_max};
+use crate::rotate::{rotate, unrotate_each};
+use crate::sliding_max::rect_max;
 use crate::tents::Footprint;
 
 /// Work tiles are 2 × 2 km squares on a grid aligned to multiples of 2000 m
 /// in EPSG:25833 (UTM zone 33N). A tile is named after its south-west corner.
+/// Must match `TILE_M` in `lib/tiles.env`.
 pub const TILE_SIZE_M: usize = 2000;
 /// Each tile's terrain is downloaded with this much extra border, so a tent
-/// near the tile edge still sees the ground around it. Must match
-/// `BUFFER_M` in `01_download_dtm.sh`.
+/// near the tile edge still sees the ground around it. Must match `BUFFER_M`
+/// in `lib/tiles.env` (a mismatch fails loudly: tiles are size-checked).
 pub const BUFFER_M: usize = 8;
 /// Terrain pixels per side of a downloaded tile (1 m pixels).
 pub const DTM_SIZE_PX: usize = TILE_SIZE_M + 2 * BUFFER_M;
@@ -32,13 +33,12 @@ pub struct Placement {
 }
 
 pub fn best_placement(cost: &Grid, footprint: &Footprint) -> Placement {
-    let mut scratch = SlidingMax::default();
     match footprint {
         Footprint::Round { rectangles } => {
-            // Max over a union of rectangles = max of each rectangle's max.
+            // The disc is a union of rectangles (see `Footprint::Round`).
             let mut max_slope = Grid::filled(cost.width, cost.height, f32::NEG_INFINITY);
             for &(width, height) in rectangles {
-                let part = rect_max(cost, width, height, &mut scratch);
+                let part = rect_max(cost, width, height);
                 for (m, p) in max_slope.data.iter_mut().zip(&part.data) {
                     *m = m.max(*p);
                 }
@@ -60,14 +60,19 @@ pub fn best_placement(cost: &Grid, footprint: &Footprint) -> Placement {
                 for (u_len, v_len, bearing) in
                     [(*length, *width, 90 + angle), (*width, *length, angle)]
                 {
-                    let filtered = rect_max(&rotated, u_len, v_len, &mut scratch);
-                    let candidate = unrotate(&filtered, angle as f32, cost.width, cost.height);
-                    for i in 0..candidate.data.len() {
-                        if candidate.data[i] < best.max_slope.data[i] {
-                            best.max_slope.data[i] = candidate.data[i];
-                            best.heading[i] = bearing as i16;
-                        }
-                    }
+                    let filtered = rect_max(&rotated, u_len, v_len);
+                    unrotate_each(
+                        &filtered,
+                        angle as f32,
+                        cost.width,
+                        cost.height,
+                        |i, slope| {
+                            if slope < best.max_slope.data[i] {
+                                best.max_slope.data[i] = slope;
+                                best.heading[i] = bearing as i16;
+                            }
+                        },
+                    );
                 }
             }
             best
@@ -99,7 +104,7 @@ pub fn summarise(placement: &Placement) -> CellResult {
                 for x in 0..CELL_SIZE_M {
                     let px = BUFFER_M + cell_x * CELL_SIZE_M + x;
                     let py = BUFFER_M + cell_y * CELL_SIZE_M + y;
-                    let value = placement.max_slope.data[py * width + px];
+                    let value = placement.max_slope.get(px, py);
                     if value < best {
                         best = value;
                         best_heading = placement.heading[py * width + px];
@@ -124,10 +129,9 @@ pub fn cell_elevation(elevation: &Grid) -> Vec<f32> {
             let mut sum = 0.0;
             for y in 0..CELL_SIZE_M {
                 for x in 0..CELL_SIZE_M {
-                    sum += elevation.get(
-                        BUFFER_M + cell_x * CELL_SIZE_M + x,
-                        BUFFER_M + cell_y * CELL_SIZE_M + y,
-                    );
+                    let px = BUFFER_M + cell_x * CELL_SIZE_M + x;
+                    let py = BUFFER_M + cell_y * CELL_SIZE_M + y;
+                    sum += elevation.get(px, py);
                 }
             }
             out[cell_y * CELLS_PER_SIDE + cell_x] = sum / (CELL_SIZE_M * CELL_SIZE_M) as f32;

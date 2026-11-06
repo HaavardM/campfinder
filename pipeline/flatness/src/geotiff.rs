@@ -20,20 +20,13 @@ use tiff::tags::Tag;
 use crate::grid::Grid;
 
 /// Reads a single-band float32 GeoTIFF (as downloaded from Kartverket's
-/// terrain WCS). Georeferencing is not read back: the tile name says where it
-/// is, and the size is checked by the caller.
-pub fn read_f32(path: &Path) -> Result<Grid, String> {
-    let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut decoder =
-        Decoder::new(BufReader::new(file)).map_err(|e| format!("{}: {e}", path.display()))?;
-    let (width, height) = decoder.dimensions().map_err(|e| e.to_string())?;
-    match decoder
-        .read_image()
-        .map_err(|e| format!("{}: {e}", path.display()))?
-    {
+/// terrain WCS) that must be `size` × `size` pixels. Georeferencing is not
+/// read back: the tile name says where it is.
+pub fn read_f32(path: &Path, size: usize) -> Result<Grid, String> {
+    match decode(path, size)? {
         DecodingResult::F32(data) => Ok(Grid {
-            width: width as usize,
-            height: height as usize,
+            width: size,
+            height: size,
             data,
         }),
         _ => Err(format!("{}: expected 32-bit float pixels", path.display())),
@@ -41,24 +34,38 @@ pub fn read_f32(path: &Path) -> Result<Grid, String> {
 }
 
 /// Reads a single-band 8-bit GeoTIFF (the water masks made by
-/// `gdal_rasterize`). Returns width, height and pixels.
-pub fn read_u8(path: &Path) -> Result<(usize, usize, Vec<u8>), String> {
-    let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut decoder =
-        Decoder::new(BufReader::new(file)).map_err(|e| format!("{}: {e}", path.display()))?;
-    let (width, height) = decoder.dimensions().map_err(|e| e.to_string())?;
-    match decoder
-        .read_image()
-        .map_err(|e| format!("{}: {e}", path.display()))?
-    {
-        DecodingResult::U8(data) => Ok((width as usize, height as usize, data)),
+/// `gdal_rasterize`) that must be `size` × `size` pixels.
+pub fn read_u8(path: &Path, size: usize) -> Result<Vec<u8>, String> {
+    match decode(path, size)? {
+        DecodingResult::U8(data) => Ok(data),
         _ => Err(format!("{}: expected 8-bit pixels", path.display())),
     }
 }
 
+fn decode(path: &Path, size: usize) -> Result<DecodingResult, String> {
+    let error = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let file = File::open(path).map_err(|e| error(&e))?;
+    let mut decoder = Decoder::new(BufReader::new(file)).map_err(|e| error(&e))?;
+    let (width, height) = decoder.dimensions().map_err(|e| error(&e))?;
+    if (width as usize, height as usize) != (size, size) {
+        return Err(error(&format!(
+            "expected {size}×{size} pixels, got {width}×{height}"
+        )));
+    }
+    decoder.read_image().map_err(|e| error(&e))
+}
+
+/// Writes `bytes` to `<path>.tmp` and renames it into place, so an
+/// interrupted run never leaves a half-written file that looks finished.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// Where a raster sits: map coordinates (EPSG:25833) of its top-left corner,
 /// and its pixel size in metres.
-pub struct Placement {
+pub struct Georef {
     pub west: f64,
     pub north: f64,
     pub pixel_size: f64,
@@ -69,7 +76,7 @@ pub fn write_f32(
     width: usize,
     height: usize,
     data: &[f32],
-    at: &Placement,
+    at: &Georef,
 ) -> Result<(), String> {
     write(path, |encoder| {
         let mut image = encoder.new_image::<colortype::Gray32Float>(width as u32, height as u32)?;
@@ -83,7 +90,7 @@ pub fn write_i16(
     width: usize,
     height: usize,
     data: &[i16],
-    at: &Placement,
+    at: &Georef,
 ) -> Result<(), String> {
     write(path, |encoder| {
         let mut image = encoder.new_image::<colortype::GrayI16>(width as u32, height as u32)?;
@@ -92,8 +99,7 @@ pub fn write_i16(
     })
 }
 
-/// Writes to `<path>.tmp` and renames it into place, so an interrupted run
-/// never leaves a half-written file that looks finished.
+/// Like `write_atomic`, but streaming through the TIFF encoder.
 fn write(
     path: &Path,
     encode: impl FnOnce(&mut TiffEncoder<BufWriter<File>>) -> tiff::TiffResult<()>,
@@ -108,7 +114,7 @@ fn write(
 
 fn write_geo_tags<W: std::io::Write + std::io::Seek, K: tiff::encoder::TiffKind>(
     encoder: &mut tiff::encoder::DirectoryEncoder<'_, W, K>,
-    at: &Placement,
+    at: &Georef,
     nodata: &str,
 ) -> tiff::TiffResult<()> {
     // Pixel (0, 0) ↔ map point (west, north). Six numbers: raster x, y, z,
@@ -145,15 +151,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("flatness-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test.tif");
-        let data: Vec<f32> = (0..12).map(|v| v as f32 * 1.5).collect();
-        let at = Placement {
+        let data: Vec<f32> = (0..16).map(|v| v as f32 * 1.5).collect();
+        let at = Georef {
             west: 220000.0,
             north: 6866000.0,
             pixel_size: 10.0,
         };
-        write_f32(&path, 4, 3, &data, &at).unwrap();
-        let grid = read_f32(&path).unwrap();
-        assert_eq!((grid.width, grid.height), (4, 3));
+        write_f32(&path, 4, 4, &data, &at).unwrap();
+        let grid = read_f32(&path, 4).unwrap();
         assert_eq!(grid.data, data);
         std::fs::remove_dir_all(dir).unwrap();
     }

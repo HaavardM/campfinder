@@ -44,17 +44,13 @@ impl Progress {
         self.busy[thread].store(false, Relaxed);
 
         let done = self.done.fetch_add(1, Relaxed) + 1;
-        match result {
-            Ok(line) => {
-                println!(
-                    "[{done:>5}/{}] cpu {thread:>2}  {line} | {}",
-                    self.total,
-                    self.rate_and_eta(done)
-                );
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
+        let line = result?;
+        println!(
+            "[{done:>5}/{}] cpu {thread:>2}  {line} | {}",
+            self.total,
+            self.rate_and_eta(done)
+        );
+        Ok(())
     }
 
     /// Prints the busy-thread strip every 2 seconds until `finish` is called.

@@ -3,7 +3,7 @@
 # the local database. No GDAL install needed: GDAL steps run in Docker, the
 # Rust engine runs natively.
 #
-# Usage: ./run_local.sh [region.env]   (default regions/test.env;
+# Usage: ./run_local.sh [regions/x.env]   (default regions/test.env;
 #        needs `docker compose up -d` in ../ first)
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -17,9 +17,8 @@ export N50_URL=https://nedlasting.geonorge.no/geonorge/Basisdata/N50Kartdata/FGD
 in_gdal() { docker run --rm -v "$PWD:/pipeline" -w /pipeline -e N50_URL "$GDAL_IMAGE" "$@"; }
 
 in_gdal ./01_download_water.sh
-cp "$REGION" data/region.env # inside the container only pipeline/ is visible
-in_gdal ./02_download_tiles.sh data/region.env
-(cd flatness && cargo build --release --quiet)
+in_gdal ./02_download_tiles.sh "$REGION" # a path inside pipeline/
+(cd flatness && cargo build --release --quiet) # inside the crate, for target-cpu=native
 flatness/target/release/flatness --tents tents.toml \
   --dtm-dir data/dtm --water-dir data/water --out-dir data/flatness
 ./04_load_cells.sh

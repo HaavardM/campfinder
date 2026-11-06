@@ -10,8 +10,8 @@ set -euo pipefail
 
 EAST=$1
 NORTH=$2
-TILE_M=2000
-BUFFER_M=8 # must match BUFFER_M in flatness/src/tile.rs
+# shellcheck source=lib/tiles.env
+source "$(dirname "$0")/tiles.env"
 SIZE_PX=$((TILE_M + 2 * BUFFER_M))
 
 NAME=$(printf "E%07d_N%07d" "$EAST" "$NORTH")
@@ -36,8 +36,9 @@ if [[ ! -f $DTM ]]; then
   QUERY="SERVICE=WCS&VERSION=1.0.0&REQUEST=GetCoverage&COVERAGE=nhm_dtm_topo_25833"
   QUERY="$QUERY&CRS=EPSG:25833&FORMAT=GeoTIFF&BBOX=$W,$S,$E,$N&WIDTH=$SIZE_PX&HEIGHT=$SIZE_PX"
   curl -sf --retry 3 -o "$DTM.part" "$WCS?$QUERY"
-  # Errors can come back as XML with status 200, so check it is a TIFF.
-  if [[ $(head -c 2 "$DTM.part") != "II" ]]; then
+  # Errors can come back as XML with status 200, so check it is a TIFF of the
+  # right size now, while a rerun can still fix it.
+  if ! gdalinfo "$DTM.part" 2> /dev/null | grep -q "Size is $SIZE_PX, $SIZE_PX"; then
     echo "$NAME: terrain download failed: $(head -c 300 "$DTM.part")" >&2
     rm -f "$DTM.part"
     exit 1
@@ -55,6 +56,7 @@ if [[ ! -f $MASK ]]; then
 fi
 end=$(date +%s.%N)
 
-megabytes=$(awk "BEGIN { print $(stat -c %s "$DTM" 2> /dev/null || stat -f %z "$DTM") / 1e6 }")
-awk -v name="$NAME" -v mb="$megabytes" -v s="$(awk "BEGIN { print $end - $start }")" \
-  'BEGIN { printf "downloaded %s  %.1f MB in %.1f s (%.1f MB/s)\n", name, mb, s, mb / s }'
+awk -v name="$NAME" -v bytes="$(wc -c < "$DTM")" -v t0="$start" -v t1="$end" 'BEGIN {
+  mb = bytes / 1e6; s = t1 - t0
+  printf "downloaded %s  %.1f MB in %.1f s (%.1f MB/s)\n", name, mb, s, mb / s
+}'

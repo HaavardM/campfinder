@@ -105,38 +105,31 @@ computing distances to them, are added as extra steps.
 
 ## Data model
 
+See [db/schema.sql](db/schema.sql).
+
 ```sql
-tents (tent_id, name, shape, width_m, length_m, diameter_m)
-
-cells (cell_id, geom, elevation_m)
-
-cell_flatness (cell_id, tent_id, max_slope_deg, best_heading_deg)
+tent (slug, name)
+cell (tent, x, y, max_slope_deg, heading_deg, elevation_m)   -- 10 m cells ≤ 10°
+bin  (tent, zoom, bx, by, step, cells)   -- cells counted per bin and 0.5° slope step
 ```
 
-Cells where no tent fits are left out. Columns for distances, land cover and
-so on are added when those features arrive.
+`bin` is rebuilt after each load ([db/bins.sql](db/bins.sql)): 80 m bins at
+zoom 12, each zoom out merging 2 × 2. Map tiles read only `bin`, so a tile
+costs the same however much data there is.
 
 ## Web app
 
-The focus is a flatness heatmap that's quick to explore.
+The map shows **areas, not exact spots**: a smooth surface of a fitness
+score, greener where the ground is better for the chosen tent.
 
-- **Map:** full screen on the Kartverket topo basemap, with smooth pan and
-  zoom, and a toggle between topo and grey topo (the heatmap stands out
-  better on grey). Aerial photos (Norge i bilder) need an access agreement,
-  so they're left out for now.
-- **Heatmap:** one server route returns vector tiles (`ST_AsMVT`) for the
-  chosen tent and max slope. It shows a smooth heatmap when zoomed out and
-  coloured 10 m cells when zoomed in, with a short fade between the two.
-- **Controls:** a small floating panel with tent (`Select`), max slope
-  (`Slider`) and heatmap opacity.
-- **Moving around:**
-  - Place-name search (Kartverket's free place-name API), e.g. "Mysuseter".
-  - Buttons to jump to each processed region (Rondane, Dovre).
-  - Map position, tent and slope kept in the URL, so reloading or sharing a
-    link returns to the same view.
-  - "Locate me" for use in the field.
-- **Spot details:** clicking a cell shows elevation, slope, the tent outline
-  at its best heading, and a norgeskart.no link.
+- **Score per bin:** the average over its 10 m cells of 1 where the tent
+  fits at ≤ 1°, falling linearly to 0 at the chosen max slope (0 where it
+  doesn't fit).
+- **Smooth surface:** one point per bin, drawn as a MapLibre heatmap whose
+  blur is normalised to a weighted average of nearby scores, so it
+  interpolates rather than piling up (see `web/src/lib/flat-layers.ts`).
+- **Controls:** tent, max slope, place search, region buttons, topo/grey
+  basemap; everything kept in the URL.
 
 ## Phases
 

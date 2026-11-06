@@ -1,5 +1,5 @@
 import { Tent } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { PlaceSearch } from "#/components/place-search";
 import { Button } from "#/components/ui/button";
@@ -14,7 +14,7 @@ import {
 import { Slider } from "#/components/ui/slider";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { BASEMAPS, type Basemap, isBasemap } from "#/lib/basemaps";
-import { SHARE_COLOURS } from "#/lib/flat-layers";
+import { MAX_SLOPE_DEG, SCORE_COLOURS } from "#/lib/flat-layers";
 import type { Place } from "#/lib/place-search";
 import { REGIONS, type Region } from "#/lib/regions";
 import type { Tent as TentRow } from "#/server/tents";
@@ -36,7 +36,6 @@ export function MapPanel(props: Props) {
 	// The slider shows its value while dragging, but only updates the map
 	// (and refetches tiles) when released.
 	const [slope, setSlope] = useState(props.maxSlope);
-	useEffect(() => setSlope(props.maxSlope), [props.maxSlope]);
 
 	return (
 		<Card className="absolute top-3 left-3 z-10 w-[min(20rem,calc(100vw-5rem))] gap-0 py-0 shadow-lg">
@@ -69,7 +68,7 @@ export function MapPanel(props: Props) {
 						</div>
 						<Slider
 							min={1}
-							max={10}
+							max={MAX_SLOPE_DEG}
 							step={0.5}
 							value={[slope]}
 							onValueChange={([value]) => setSlope(value)}
@@ -78,7 +77,7 @@ export function MapPanel(props: Props) {
 						/>
 					</div>
 
-					<ShareLegend />
+					<ScoreLegend />
 				</div>
 
 				<div className="flex items-center justify-between gap-2">
@@ -118,25 +117,24 @@ export function MapPanel(props: Props) {
 	);
 }
 
-// What the colours mean when zoomed out: the share of the ground in each
-// square where the tent fits within the max slope.
-function ShareLegend() {
-	const first = SHARE_COLOURS[0][0];
-	const last = SHARE_COLOURS[SHARE_COLOURS.length - 1][0];
-	const stops = SHARE_COLOURS.map(
-		([share, colour]) =>
-			`${colour} ${((share - first) / (last - first)) * 100}%`,
+// What the colours mean: how good the ground in a square is for the tent.
+function ScoreLegend() {
+	const first = SCORE_COLOURS[0][0];
+	const last = SCORE_COLOURS[SCORE_COLOURS.length - 1][0];
+	const stops = SCORE_COLOURS.map(
+		([score, colour]) =>
+			`${colour} ${((score - first) / (last - first)) * 100}%`,
 	);
 	return (
 		<div className="flex flex-col gap-1 text-xs text-muted-foreground">
-			<span>Ground where the tent fits</span>
+			<span>Ground for the tent</span>
 			<div
 				className="h-2 rounded-full"
 				style={{ background: `linear-gradient(to right, ${stops.join(", ")})` }}
 			/>
-			<div className="flex justify-between tabular-nums">
-				<span>{first * 100}%</span>
-				<span>{last * 100}%+</span>
+			<div className="flex justify-between">
+				<span>Some</span>
+				<span>Lots of flat ground</span>
 			</div>
 		</div>
 	);

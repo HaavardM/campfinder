@@ -41,10 +41,20 @@ pub fn rotate(grid: &Grid, degrees: f32) -> Grid {
 }
 
 /// The inverse of `rotate`: for each pixel of the original `width` × `height`
-/// grid, the value of the nearest pixel in `rotated`.
-pub fn unrotate(rotated: &Grid, degrees: f32, width: usize, height: usize) -> Grid {
+/// grid, calls `visit(index, value)` with the pixel's index in that grid and
+/// the value of the nearest pixel in `rotated`.
+///
+/// A callback rather than a new grid, so the caller can use each value
+/// straight away (e.g. keep the best heading) without another pass over
+/// memory.
+pub fn unrotate_each(
+    rotated: &Grid,
+    degrees: f32,
+    width: usize,
+    height: usize,
+    mut visit: impl FnMut(usize, f32),
+) {
     let (sin, cos) = degrees.to_radians().sin_cos();
-    let mut out = Grid::filled(width, height, f32::INFINITY);
     let (src_cx, src_cy) = centre(width, height);
     let (rot_cx, rot_cy) = centre(rotated.width, rotated.height);
     for y in 0..height {
@@ -53,10 +63,9 @@ pub fn unrotate(rotated: &Grid, degrees: f32, width: usize, height: usize) -> Gr
             // R(-degrees) undoes R(degrees).
             let u = (rot_cx + dx * cos + dy * sin).round() as usize;
             let v = (rot_cy - dx * sin + dy * cos).round() as usize;
-            out.set(x, y, rotated.get(u, v));
+            visit(y * width + x, rotated.get(u, v));
         }
     }
-    out
 }
 
 /// Max of the source pixels whose centres are less than one pixel from
@@ -102,7 +111,8 @@ mod tests {
     #[test]
     fn zero_degrees_round_trips_exactly() {
         let grid = random_grid(20, 13, &mut 7);
-        let back = unrotate(&rotate(&grid, 0.0), 0.0, 20, 13);
+        let mut back = Grid::filled(20, 13, 0.0);
+        unrotate_each(&rotate(&grid, 0.0), 0.0, 20, 13, |i, v| back.data[i] = v);
         assert_eq!(back, grid);
     }
 

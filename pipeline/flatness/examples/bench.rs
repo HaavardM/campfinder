@@ -8,16 +8,16 @@ use std::time::Instant;
 
 use flatness::geotiff::read_f32;
 use flatness::rotate::rotate;
-use flatness::sliding_max::{SlidingMax, rect_max, rect_max_naive};
+use flatness::sliding_max::{rect_max, rect_max_naive};
 use flatness::tents::Footprint;
 use flatness::terrain::pixel_cost;
-use flatness::tile::best_placement;
+use flatness::tile::{DTM_SIZE_PX, best_placement};
 
 fn main() {
     let path = std::env::args()
         .nth(1)
         .expect("usage: bench <terrain tile .tif>");
-    let elevation = read_f32(Path::new(&path)).unwrap();
+    let elevation = read_f32(Path::new(&path), DTM_SIZE_PX).unwrap();
     let megapixels = elevation.data.len() as f64 / 1e6;
     let no_water = vec![0u8; elevation.data.len()];
     println!("{path}: {}×{} pixels\n", elevation.width, elevation.height);
@@ -26,10 +26,9 @@ fn main() {
         pixel_cost(&elevation, &no_water, 0.1)
     });
 
-    let mut scratch = SlidingMax::default();
     for (w, h) in [(3, 6), (6, 6), (12, 12), (24, 24)] {
         let fast = time(&format!("rect_max {w}×{h}"), megapixels, || {
-            rect_max(&cost, w, h, &mut scratch)
+            rect_max(&cost, w, h)
         });
         let naive = time(&format!("rect_max_naive {w}×{h}"), megapixels, || {
             rect_max_naive(&cost, w, h)

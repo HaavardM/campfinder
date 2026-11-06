@@ -11,10 +11,24 @@ Debian machine.
 ./run.sh          # Rondane + Dovre; rerun any time, it only does new work
 ```
 
-To try it end to end on a single tile first:
+To try it end to end on a small area first (3 × 3 tiles around Mysusæter):
 
 ```sh
 ./run.sh regions/test.env
+```
+
+Then load the results into PostGIS for the web app (`PSQL=` points it at a
+database; by default the Docker Compose one in `../`):
+
+```sh
+./04_load_cells.sh   # cells → table `cell`, then rebuilds the map's `bin` table
+```
+
+On the Mac, without installing GDAL (GDAL steps run in Docker), straight
+into the local database:
+
+```sh
+./run_local.sh regions/test-known.env   # Mysusæter, Smuksjøseter, Rondvassbu
 ```
 
 What `run.sh` does:
@@ -47,6 +61,8 @@ data/
       gamme-8-pc.slope.tif    best (lowest) max-slope of a placement in the cell, degrees
       keron-4-gt.slope.tif
       keron-4-gt.heading.tif  compass bearing of that placement's long side
+      keron-4-gt.cells.csv    cells up to 10°, for the database (04_load_cells.sh)
+      keron-4-gt.done         marks the tent done, with the settings used
     keron-4-gt.slope.vrt      mosaic of all tiles, for QGIS
 ```
 
@@ -58,12 +74,14 @@ know before trusting the rest.
 
 ## Tuning
 
-- **Tents:** edit [tents.toml](tents.toml) and rerun; only new or changed
-  tents are computed. Sizes are rounded to whole metres, clearance included.
-- **Bumpiness:** `MAX_ROUGHNESS_M` (default 0.1). A pixel sitting more than
+Each tile's `.done` file records the tent footprint and roughness limit it
+was computed with, so changing either recomputes exactly what's affected.
+
+- **Tents:** edit [tents.toml](tents.toml) and rerun. Sizes are rounded to
+  whole metres, clearance included.
+- **Bumpiness:** `--max-roughness-m` (default 0.1). A pixel sitting more than
   this above or below the average of its 3 × 3 neighbourhood counts as a rock
-  or hummock. After changing it, recompute everything:
-  `MAX_ROUGHNESS_M=0.15 ./03_flatness.sh --force`
+  or hummock: `./03_flatness.sh --max-roughness-m 0.15`
 
 ## How it works
 
@@ -77,8 +95,11 @@ For each tile, the engine ([flatness/](flatness/), Rust):
    Because unusable pixels are infinitely steep, this one number answers both
    "how steep?" and "is anything in the way?".
    - A max over a rectangle is a max along rows, then down columns.
-   - The van Herk / Gil-Werman algorithm does each in 3 comparisons per
-     pixel, whatever the window length.
+   - Each pass is "elementwise max of two long slices", which the compiler
+     turns into SIMD instructions. Cleverer algorithms (van Herk /
+     Gil-Werman: 3 comparisons per pixel at any window size) have steps that
+     depend on each other, so no SIMD; at our window sizes (≤ 12 px) the
+     simple version measured 2–6× faster.
 3. **Rotated tents** ([rotate.rs](flatness/src/rotate.rs)): rotate the terrain
    instead of the tent, then use the same rectangle filter. One rotation covers
    two headings 90° apart, so 12 headings need 6 rotations. Round tents are a
@@ -96,16 +117,19 @@ Measured on one thread of an Apple M-series Mac, one tile:
 
 | Step | ms |
 |---|---|
-| cost per pixel | 37 |
-| rectangle max, any size (fast) | 22–30 |
-| rectangle max 24 × 24, naive | 1747 |
-| Keron, 12 headings | 768 |
-| Gamme, round | 50 |
+| cost per pixel | 49 |
+| rectangle max 6 × 6 / 12 × 12 | 4 / 7 |
+| rectangle max 12 × 12, naive | 418 |
+| Keron, 12 headings | 401 |
+| Gamme, round | 11 |
+
+All 90 tiles of `regions/test-known.env` take 7 s on the Mac's 10 threads.
 
 ```sh
-cargo run --release --example bench --manifest-path flatness/Cargo.toml -- data/dtm/<tile>.tif
-./scaling.sh      # same tiles at 1–32 threads: where does it stop scaling?
-cargo test --release --manifest-path flatness/Cargo.toml
+cd flatness   # run cargo here, so .cargo/config.toml (target-cpu=native) applies
+cargo run --release --example bench -- ../data/dtm/<tile>.tif
+cargo test --release
+cd .. && ./scaling.sh   # same tiles at 1–32 threads: where does it stop scaling?
 ```
 
 ## Known limits

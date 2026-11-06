@@ -23,16 +23,14 @@ for path in "${all_tiles[@]:0:TILES}"; do
   ln -s "$PWD/data/water/$(basename "$path")" "$work/water/"
 done
 
-cargo build --release --quiet --manifest-path flatness/Cargo.toml
+(cd flatness && cargo build --release --quiet) # inside the crate, for target-cpu=native
 echo "$TILES tiles"
 printf "%8s %10s %9s\n" threads seconds speedup
 for threads in 1 2 4 8 16 32; do
   rm -rf "$work/out"
-  start=$(date +%s.%N)
-  flatness/target/release/flatness --tents tents.toml --dtm-dir "$work/dtm" \
-    --water-dir "$work/water" --out-dir "$work/out" --threads "$threads" > /dev/null
-  end=$(date +%s.%N)
-  seconds=$(awk "BEGIN { print $end - $start }")
+  /usr/bin/time -f %e -o "$work/seconds" flatness/target/release/flatness --tents tents.toml \
+    --dtm-dir "$work/dtm" --water-dir "$work/water" --out-dir "$work/out" --threads "$threads" > /dev/null
+  seconds=$(< "$work/seconds")
   baseline=${baseline:-$seconds}
   printf "%8d %10.1f %8.1fx\n" "$threads" "$seconds" "$(awk "BEGIN { print $baseline / $seconds }")"
 done

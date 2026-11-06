@@ -35,7 +35,9 @@
 	"overrides": [
 		{
 			"includes": ["**/src/components/ui/**"],
-			"linter": { "enabled": false }
+			"linter": {
+				"rules": { "suspicious": { "noArrayIndexKey": "off" } }
+			}
 		}
 	]
 }

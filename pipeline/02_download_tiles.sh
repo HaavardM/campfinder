@@ -11,7 +11,8 @@ cd "$(dirname "$0")"
 
 # shellcheck source=/dev/null  # sets WEST, SOUTH, EAST, NORTH
 source "$1"
-TILE_M=2000
+# shellcheck source=lib/tiles.env
+source lib/tiles.env
 PARALLEL_DOWNLOADS=4 # more would just be impolite to Kartverket's servers
 
 # 754 → "12m34s"
@@ -42,8 +43,8 @@ done | xargs -P "$PARALLEL_DOWNLOADS" -n 2 ./lib/fetch_tile.sh | while read -r s
   # Estimate from downloaded tiles only: skipped tiles take no time.
   left=$((total - done_count))
   eta=$((elapsed * left / downloaded))
-  rate=$(awk "BEGIN { printf \"%.1f\", $downloaded / ($elapsed + 0.001) }")
-  printf "[%4d/%d] %s | %s tiles/s, ETA %s\n" "$done_count" "$total" "$line" "$rate" "$(duration "$eta")"
+  per_minute=$((downloaded * 60 / (elapsed + 1)))
+  printf "[%4d/%d] %s | %d tiles/min, ETA %s\n" "$done_count" "$total" "$line" "$per_minute" "$(duration "$eta")"
 done
 
 tiles=(data/dtm/*.tif)

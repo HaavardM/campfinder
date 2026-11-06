@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::time::Instant;
 
-use flatness::geotiff::{self, Placement as MapPlacement};
-use flatness::tents::{Footprint, Shape, TentsFile};
+use flatness::geotiff::{self, Georef, write_atomic};
+use flatness::tents::{Footprint, Shape, Tent, TentsFile};
 use flatness::terrain::pixel_cost;
 use flatness::tile::{
     BUFFER_M, CELL_SIZE_M, CELLS_PER_SIDE, CellResult, DTM_SIZE_PX, TILE_SIZE_M, best_placement,
@@ -79,13 +79,14 @@ fn main() {
         tents_csv += &format!("{},\"{}\"\n", tent.slug(), tent.name.replace('"', "\"\""));
     }
     if let Err(error) = std::fs::create_dir_all(&args.out_dir)
-        .and_then(|_| std::fs::write(args.out_dir.join("tents.csv"), tents_csv))
+        .map_err(|e| format!("{}: {e}", args.out_dir.display()))
+        .and_then(|_| write_atomic(&args.out_dir.join("tents.csv"), tents_csv.as_bytes()))
     {
-        eprintln!("{}: {error}", args.out_dir.display());
+        eprintln!("{error}");
         exit(2);
     }
 
-    let jobs = find_jobs(&args, &config).unwrap_or_else(|error| {
+    let jobs = find_jobs(&args, &config, &footprints).unwrap_or_else(|error| {
         eprintln!("{error}");
         exit(2);
     });
@@ -151,27 +152,15 @@ fn process(
     footprints: &[Footprint],
 ) -> Result<String, String> {
     let started = Instant::now();
-    let elevation = geotiff::read_f32(&job.dtm)?;
-    if (elevation.width, elevation.height) != (DTM_SIZE_PX, DTM_SIZE_PX) {
-        return Err(format!(
-            "{}: expected {DTM_SIZE_PX}×{DTM_SIZE_PX} pixels, got {}×{}",
-            job.dtm.display(),
-            elevation.width,
-            elevation.height
-        ));
-    }
-    let water_path = args.water_dir.join(format!("{}.tif", job.name));
-    let (water_width, water_height, water) = geotiff::read_u8(&water_path)?;
-    if (water_width, water_height) != (DTM_SIZE_PX, DTM_SIZE_PX) {
-        return Err(format!(
-            "{}: expected {DTM_SIZE_PX}×{DTM_SIZE_PX} pixels, got {water_width}×{water_height}",
-            water_path.display()
-        ));
-    }
+    let elevation = geotiff::read_f32(&job.dtm, DTM_SIZE_PX)?;
+    let water = geotiff::read_u8(
+        &args.water_dir.join(format!("{}.tif", job.name)),
+        DTM_SIZE_PX,
+    )?;
     let out_dir = args.out_dir.join(&job.name);
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     // Results cover the tile without its border, in 10 m cells.
-    let at = MapPlacement {
+    let at = Georef {
         west: job.east as f64,
         north: (job.north as usize + TILE_SIZE_M) as f64,
         pixel_size: CELL_SIZE_M as f64,
@@ -180,36 +169,21 @@ fn process(
 
     let cell_heights = cell_elevation(&elevation);
     if job.needs_elevation {
-        geotiff::write_f32(&out_dir.join("elevation.tif"), n, n, &cell_heights, &at)?;
+        geotiff::write_f32(&out_dir.join(ELEVATION_FILE), n, n, &cell_heights, &at)?;
     }
     let cost = pixel_cost(&elevation, &water, args.max_roughness_m);
     for &t in &job.tents {
         let tent = &config.tents[t];
         let cells = summarise(&best_placement(&cost, &footprints[t]));
-        write_cells_csv(
-            &out_dir.join(format!("{}.cells.csv", tent.slug())),
-            job,
-            &tent.slug(),
-            &cells,
-            &cell_heights,
-        )?;
+        let file = |kind: &str| out_dir.join(format!("{}.{kind}", tent.slug()));
+        write_cells_csv(&file("cells.csv"), job, &tent.slug(), &cells, &cell_heights)?;
+        geotiff::write_f32(&file("slope.tif"), n, n, &cells.max_slope, &at)?;
         if let Shape::Rectangle { .. } = tent.shape {
-            geotiff::write_i16(
-                &out_dir.join(format!("{}.heading.tif", tent.slug())),
-                n,
-                n,
-                &cells.heading,
-                &at,
-            )?;
+            geotiff::write_i16(&file("heading.tif"), n, n, &cells.heading, &at)?;
         }
-        // Written last: its existence marks this tent as done for this tile.
-        geotiff::write_f32(
-            &out_dir.join(format!("{}.slope.tif", tent.slug())),
-            n,
-            n,
-            &cells.max_slope,
-            &at,
-        )?;
+        // Written last: marks this tent as done, with these settings.
+        let settings = settings_used(&footprints[t], args.max_roughness_m);
+        write_atomic(&done_path(&out_dir, tent), settings.as_bytes())?;
     }
 
     let seconds = started.elapsed().as_secs_f64();
@@ -227,7 +201,7 @@ fn process(
 const MAX_STORED_SLOPE_DEG: f32 = 10.0;
 
 /// One row per usable 10 m cell, ready for Postgres `COPY`:
-/// tent, tile, x, y (south-west corner, EPSG:25833), slope, heading, elevation.
+/// tent, x, y (south-west corner, EPSG:25833), slope, heading, elevation.
 fn write_cells_csv(
     path: &Path,
     job: &Job,
@@ -236,7 +210,7 @@ fn write_cells_csv(
     elevation: &[f32],
 ) -> Result<(), String> {
     use std::fmt::Write;
-    let mut csv = String::from("tent,tile,x,y,max_slope_deg,heading_deg,elevation_m\n");
+    let mut csv = String::from("tent,x,y,max_slope_deg,heading_deg,elevation_m\n");
     for row in 0..CELLS_PER_SIDE {
         for col in 0..CELLS_PER_SIDE {
             let i = row * CELLS_PER_SIDE + col;
@@ -251,22 +225,33 @@ fn write_cells_csv(
                 -1 => String::new(), // empty = NULL: round tent
                 h => h.to_string(),
             };
-            writeln!(
-                csv,
-                "{tent},{},{x},{y},{slope:.2},{heading},{:.1}",
-                job.name, elevation[i]
-            )
-            .unwrap();
+            let height = elevation[i];
+            writeln!(csv, "{tent},{x},{y},{slope:.2},{heading},{height:.1}").unwrap();
         }
     }
-    let tmp = path.with_extension("csv.tmp");
-    std::fs::write(&tmp, csv).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    write_atomic(path, csv.as_bytes())
+}
+
+const ELEVATION_FILE: &str = "elevation.tif";
+
+/// The file marking a tent as done for a tile. It holds the settings the
+/// result was computed with, so changing a tent's size or the roughness
+/// limit makes the tile count as not done.
+fn done_path(out_dir: &Path, tent: &Tent) -> PathBuf {
+    out_dir.join(format!("{}.done", tent.slug()))
+}
+
+fn settings_used(footprint: &Footprint, max_roughness_m: f32) -> String {
+    format!("{footprint:?} max_roughness_m={max_roughness_m}\n")
 }
 
 /// Every terrain tile in `dtm_dir` (named like `E0220000_N6864000.tif`) that
-/// still lacks a result for some tent, or `--force` for all of them.
-fn find_jobs(args: &Args, config: &TentsFile) -> Result<Vec<Job>, String> {
+/// lacks an up-to-date result for some tent, or `--force` for all of them.
+fn find_jobs(
+    args: &Args,
+    config: &TentsFile,
+    footprints: &[Footprint],
+) -> Result<Vec<Job>, String> {
     let entries =
         std::fs::read_dir(&args.dtm_dir).map_err(|e| format!("{}: {e}", args.dtm_dir.display()))?;
     let mut jobs = Vec::new();
@@ -278,13 +263,12 @@ fn find_jobs(args: &Args, config: &TentsFile) -> Result<Vec<Job>, String> {
         let out_dir = args.out_dir.join(&name);
         let tents: Vec<usize> = (0..config.tents.len())
             .filter(|&t| {
-                args.force
-                    || !out_dir
-                        .join(format!("{}.slope.tif", config.tents[t].slug()))
-                        .exists()
+                let done = std::fs::read_to_string(done_path(&out_dir, &config.tents[t]));
+                let wanted = settings_used(&footprints[t], args.max_roughness_m);
+                args.force || done.ok() != Some(wanted)
             })
             .collect();
-        let needs_elevation = args.force || !out_dir.join("elevation.tif").exists();
+        let needs_elevation = args.force || !out_dir.join(ELEVATION_FILE).exists();
         if !tents.is_empty() || needs_elevation {
             jobs.push(Job {
                 name,
@@ -306,8 +290,9 @@ fn parse_tile_name(path: &Path) -> Option<(String, u32, u32)> {
         return None;
     }
     let name = path.file_stem()?.to_str()?.to_string();
-    let (east, north) = name.strip_prefix('E')?.split_once("_N")?;
-    Some((name.clone(), east.parse().ok()?, north.parse().ok()?))
+    let (e, n) = name.strip_prefix('E')?.split_once("_N")?;
+    let (east, north) = (e.parse().ok()?, n.parse().ok()?);
+    Some((name, east, north))
 }
 
 fn parse_args() -> Result<Args, String> {

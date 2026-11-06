@@ -10,14 +10,15 @@ cd "$(dirname "$0")"
 N50_URL="${N50_URL:-https://nedlasting.geonorge.no/geonorge/Basisdata/N50Kartdata/FGDB/Basisdata_0000_Norge_25833_N50Kartdata_FGDB.zip}"
 ZIP="data/n50/$(basename "$N50_URL")"
 WATER=data/water.gpkg
+refresh=${1:-}
 
-if [[ -f $WATER && ${1:-} != --refresh ]]; then
+if [[ -f $WATER && $refresh != --refresh ]]; then
   echo "Water polygons: $WATER already exists"
   exit 0
 fi
 
 mkdir -p data/n50
-if [[ ! -f $ZIP || ${1:-} == --refresh ]]; then
+if [[ ! -f $ZIP || $refresh == --refresh ]]; then
   echo "Downloading N50 map data (about 4 GB for all of Norway)..."
   curl -fL --retry 3 --progress-bar -o "$ZIP.part" "$N50_URL"
   mv "$ZIP.part" "$ZIP"

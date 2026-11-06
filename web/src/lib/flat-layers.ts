@@ -1,26 +1,65 @@
-import type { Map as MaplibreMap, VectorTileSource } from "maplibre-gl";
+import type {
+	ExpressionSpecification,
+	Map as MaplibreMap,
+	VectorTileSource,
+} from "maplibre-gl";
 
-// The flat-ground layers on the map, fed by our /tiles route.
+// The flat-ground layer on the map, fed by our /tiles route: a smooth
+// surface of fitness scores, so the better the ground for the tent, the
+// greener the area.
 //
-// Zoomed out: "bins", squares coloured by the share of their ground where the
-// tent fits, so the areas with the most spots stand out. From zoom 14: the
-// 10 m "cells", coloured by slope.
+// The tiles hold one point per bin (80 m at zoom 12, doubling with each zoom
+// out) with that bin's score. A MapLibre heatmap blurs every point into its
+// surroundings and adds the blurs up. Adding up is the catch: with the
+// points this dense, the sum quickly saturates. But the points sit on a
+// regular grid, so the sum can be normalised to an average:
 //
-// The tile route decides which of the two a tile holds, so the layers have no
-// zoom limits of their own. That matters while zooming: MapLibre shows the
-// previous zoom's tiles until the new ones arrive, and those must still draw.
+//   - MapLibre's blur (heatmap kernel) is a Gaussian, 0.3989 · e^(−4.5 r²/R²)
+//     for radius R. Summed over a grid with spacing d, the blurs add up to
+//     about 0.28 · (R/d)² everywhere.
+//   - With R = 2d, that is ≈ 1.1, so an intensity of 0.9 turns the sum back
+//     into a weighted average of the nearby scores: an interpolated surface.
+//   - This only holds if R/d stays the same at every zoom, see `radius` below.
 
 const SOURCE = "flat";
+const MIN_ZOOM = 7; // tiles exist for zooms 7–16 (see the tile route)
+const MAX_BIN_ZOOM = 12; // bins stop shrinking here: 80 m
+const MAX_ZOOM = 16;
 
-/// Colour scale for the zoomed-out squares: [share of ground, colour].
-/// Exported so the legend uses exactly the same scale.
-export const SHARE_COLOURS: [number, string][] = [
+// Slopes the pipeline stores: MAX_STORED_SLOPE_DEG in pipeline/flatness.
+export const MAX_SLOPE_DEG = 10;
+
+// Colour scale: [fitness score, colour]. Exported so the legend uses exactly
+// the same scale.
+export const SCORE_COLOURS: [number, string][] = [
 	[0.05, "#e5f5e0"],
 	[0.15, "#a1d99b"],
 	[0.3, "#41ab5d"],
 	[0.5, "#006d2c"],
 	[0.8, "#00441b"],
 ];
+
+// Grid spacing in screen pixels at a whole zoom level, the same at every
+// level because bins double in size as the map halves in scale:
+// 80 m · 4096 · 512 px / 40 075 017 m ≈ 4.2 px, stretched by 1 / cos(lat) in
+// Web Mercator, so ≈ 8.9 px at 62°N (Rondane, Dovre).
+const SPACING_PX = 8.9;
+const RADIUS_PX = 2 * SPACING_PX;
+
+// Between whole zoom levels the map shows the tiles of the level below,
+// scaled up by up to 2×, so the spacing grows with the zoom fraction and
+// snaps back at the next level. The radius follows: R at each whole level,
+// growing exponentially to 2R just before the next. From zoom 12 the bins
+// stop shrinking (80 m), so the spacing, and the radius, simply double with
+// every zoom level in.
+function radius(): ExpressionSpecification {
+	const stops: number[] = [];
+	for (let z = MIN_ZOOM; z < MAX_BIN_ZOOM; z++) {
+		stops.push(z, RADIUS_PX, z + 0.999, 2 * RADIUS_PX);
+	}
+	stops.push(MAX_BIN_ZOOM, RADIUS_PX, 22, RADIUS_PX * 2 ** (22 - MAX_BIN_ZOOM));
+	return ["interpolate", ["exponential", 2], ["zoom"], ...stops];
+}
 
 export type FlatFilter = { tent: string; maxSlope: number };
 
@@ -30,64 +69,39 @@ function tileUrl({ tent, maxSlope }: FlatFilter) {
 	return `${window.location.origin}/tiles/{z}/{x}/{y}?${params}`;
 }
 
-/// Adds the layers the first time, afterwards only swaps the tile URL so the
-/// map refetches with the new filter.
+// Adds the layer the first time; afterwards only swaps the tile URL so the
+// map refetches with the new filter.
 export function showFlat(map: MaplibreMap, filter: FlatFilter) {
 	const source = map.getSource<VectorTileSource>(SOURCE);
 	if (source) {
 		source.setTiles([tileUrl(filter)]);
-	} else {
-		addFlatLayers(map, filter);
+		return;
 	}
-}
-
-function addFlatLayers(map: MaplibreMap, filter: FlatFilter) {
 	map.addSource(SOURCE, {
 		type: "vector",
 		tiles: [tileUrl(filter)],
-		maxzoom: 16, // deeper zooms reuse zoom 16 tiles
+		minzoom: MIN_ZOOM,
+		maxzoom: MAX_ZOOM, // zoomed in further, zoom 16 tiles are enlarged
 	});
-
 	map.addLayer({
-		id: "flat-bins",
-		type: "fill",
+		id: "flat-scores",
+		type: "heatmap",
 		source: SOURCE,
-		"source-layer": "bins",
-		// Hide squares with only a few scattered spots.
-		filter: [">=", ["get", "share"], SHARE_COLOURS[0][0]],
+		"source-layer": "scores",
 		paint: {
-			// Antialiased edges leave thin seams between neighbouring squares.
-			"fill-antialias": false,
-			"fill-opacity": 0.7,
-			"fill-color": [
+			"heatmap-weight": ["get", "score"],
+			"heatmap-radius": radius(),
+			"heatmap-intensity": 0.9,
+			"heatmap-opacity": 0.75,
+			// Density is now the interpolated score: transparent where there's
+			// hardly any usable ground, deeper green the better it gets.
+			"heatmap-color": [
 				"interpolate",
 				["linear"],
-				["get", "share"],
-				...SHARE_COLOURS.flat(),
-			],
-		},
-	});
-
-	map.addLayer({
-		id: "flat-cells",
-		type: "fill",
-		source: SOURCE,
-		"source-layer": "cells",
-		paint: {
-			"fill-opacity": 0.55,
-			// Flattest ground darkest green, up to yellow at 10°.
-			"fill-color": [
-				"interpolate",
-				["linear"],
-				["get", "slope"],
+				["heatmap-density"],
 				0,
-				"#006d2c",
-				3,
-				"#31a354",
-				6,
-				"#addd8e",
-				10,
-				"#fee08b",
+				"rgba(0, 0, 0, 0)",
+				...SCORE_COLOURS.flat(),
 			],
 		},
 	});
