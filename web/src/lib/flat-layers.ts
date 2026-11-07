@@ -182,8 +182,10 @@ export function showFlat(map: MaplibreMap, filter: FlatFilter) {
 	// website is free and takes a box in UTM 33 in its URL.
 	map.on("click", "flat-areas", (event) => {
 		const area = event.features?.[0]?.properties;
-		if (area)
-			window.open(norgeIBilderUrl(area.x, area.y), "_blank", "noreferrer");
+		if (area) {
+			const url = norgeIBilderUrl(area.x, area.y, area.m2);
+			window.open(url, "_blank", "noreferrer");
+		}
 	});
 	map.on("mouseenter", "flat-areas", () => {
 		map.getCanvas().style.cursor = "pointer";
@@ -193,8 +195,12 @@ export function showFlat(map: MaplibreMap, filter: FlatFilter) {
 	});
 }
 
-// A 400 × 300 m view around a point given in UTM 33 metres (EPSG:25833).
-function norgeIBilderUrl(x: number, y: number) {
-	const box = `xmin=${x - 200}&xmax=${x + 200}&ymin=${y - 150}&ymax=${y + 150}`;
+// A view around a point given in UTM 33 metres (EPSG:25833), close enough
+// to see the ground: about twice the area across (its side is √m2), at
+// least 80 × 60 m.
+function norgeIBilderUrl(x: number, y: number, m2: number) {
+	const half = Math.round(Math.max(40, Math.sqrt(m2)));
+	const [w, h] = [half, Math.round(half * 0.75)];
+	const box = `xmin=${x - w}&xmax=${x + w}&ymin=${y - h}&ymax=${y + h}`;
 	return `https://norgeibilder.no/?wkid=25833&is3d=false&${box}`;
 }
