@@ -3,11 +3,15 @@ import { useEffect, useRef } from "react";
 
 import { MapPanel } from "#/components/map-panel";
 import { type Basemap, isBasemap, showBasemap } from "#/lib/basemaps";
-import { googleSatelliteUrl, showFlat } from "#/lib/flat-layers";
+import {
+	googleSatelliteUrl,
+	isSlopeLimit,
+	type SlopeLimit,
+	showFlat,
+} from "#/lib/flat-layers";
+import { getManifest, pmtilesUrl } from "#/lib/map-data";
 import { isSeason, type Season } from "#/lib/seasons";
 import { type MapView, useMaplibre } from "#/lib/use-maplibre";
-import { getTents } from "#/server/tents";
-import { getTileVersion } from "#/server/tile-version";
 
 // Everything that describes the current view lives in the URL, so a reload or
 // a shared link opens the same place. Example: /?lat=61.93&lon=9.73&zoom=10
@@ -15,7 +19,7 @@ type MapSearch = MapView & {
 	basemap: Basemap;
 	tent?: string; // tent slug; the first tent if not set
 	season: Season;
-	maxSlope: number; // degrees
+	maxSlope: SlopeLimit; // degrees: the limits the files have
 	minArea: number; // m²: smaller areas with room for the tent are left out
 };
 
@@ -43,22 +47,19 @@ export const Route = createFileRoute("/")({
 		basemap: isBasemap(search.basemap) ? search.basemap : RONDANE.basemap,
 		tent: typeof search.tent === "string" ? search.tent : undefined,
 		season: isSeason(search.season) ? search.season : RONDANE.season,
-		maxSlope: numberOr(search.maxSlope, RONDANE.maxSlope),
+		maxSlope: isSlopeLimit(search.maxSlope)
+			? search.maxSlope
+			: RONDANE.maxSlope,
 		minArea: numberOr(search.minArea, RONDANE.minArea),
 	}),
-	loader: async () => {
-		const [tents, tileVersion] = await Promise.all([
-			getTents(),
-			getTileVersion(),
-		]);
-		return { tents, tileVersion };
-	},
+	loader: () => getManifest(),
 	component: MapPage,
 });
 
 function MapPage() {
 	const search = Route.useSearch();
-	const { tents, tileVersion } = Route.useLoaderData();
+	const manifest = Route.useLoaderData();
+	const tents = manifest.tents;
 	const navigate = useNavigate({ from: "/" });
 	// A control changed: update its value in the URL. `replace` keeps the
 	// browser history from filling up with every change.
@@ -99,11 +100,15 @@ function MapPage() {
 	}, [map, search.basemap]);
 
 	useEffect(() => {
-		if (map && tent) {
-			const { season, maxSlope, minArea } = search;
-			showFlat(map, { tent, season, maxSlope, minArea, tileVersion });
+		const url = tent && pmtilesUrl(manifest, tent, search.season);
+		if (map && url) {
+			showFlat(map, {
+				url,
+				maxSlope: search.maxSlope,
+				minArea: search.minArea,
+			});
 		}
-	}, [map, tent, search.season, search.maxSlope, search.minArea, tileVersion]);
+	}, [map, manifest, tent, search.season, search.maxSlope, search.minArea]);
 
 	return (
 		<main className="relative h-dvh w-full">

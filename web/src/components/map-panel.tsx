@@ -17,13 +17,14 @@ import { BASEMAPS, type Basemap, isBasemap } from "#/lib/basemaps";
 import {
 	AREA_COLOUR,
 	AREA_OUTLINE_COLOUR,
-	MAX_SLOPE_DEG,
 	SCORE_COLOURS,
+	SLOPE_LIMITS,
+	type SlopeLimit,
 } from "#/lib/flat-layers";
+import type { Tent as TentRow } from "#/lib/map-data";
 import type { Place } from "#/lib/place-search";
 import { REGIONS, type Region } from "#/lib/regions";
 import { isSeason, SEASONS, type Season } from "#/lib/seasons";
-import type { Tent as TentRow } from "#/server/tents";
 
 type Props = {
 	tents: TentRow[];
@@ -31,8 +32,8 @@ type Props = {
 	onTentChange: (tent: string) => void;
 	season: Season;
 	onSeasonChange: (season: Season) => void;
-	maxSlope: number;
-	onMaxSlopeChange: (maxSlope: number) => void;
+	maxSlope: SlopeLimit;
+	onMaxSlopeChange: (maxSlope: SlopeLimit) => void;
 	minArea: number;
 	onMinAreaChange: (minArea: number) => void;
 	photoUrl: string;
@@ -44,9 +45,8 @@ type Props = {
 
 // The floating panel in the top-left corner of the map.
 export function MapPanel(props: Props) {
-	// The sliders show their value while dragging, but only update the map
-	// (and refetch tiles) when released.
-	const [slope, setSlope] = useState(props.maxSlope);
+	// The slider shows its value while dragging, but only updates the map
+	// when released.
 	const [area, setArea] = useState(props.minArea);
 
 	return (
@@ -91,20 +91,29 @@ export function MapPanel(props: Props) {
 						))}
 					</ToggleGroup>
 
-					<div className="flex flex-col gap-2">
-						<div className="flex justify-between text-sm">
-							<span className="text-muted-foreground">Max slope</span>
-							<span className="font-medium tabular-nums">{slope}°</span>
-						</div>
-						<Slider
-							min={1}
-							max={MAX_SLOPE_DEG}
-							step={0.5}
-							value={[slope]}
-							onValueChange={([value]) => setSlope(value)}
-							onValueCommit={([value]) => props.onMaxSlopeChange(value)}
-							aria-label="Max slope"
-						/>
+					{/* The slope limits the map files have areas for. */}
+					<div className="flex items-center justify-between gap-2 text-sm">
+						<span className="text-muted-foreground">Max slope</span>
+						<ToggleGroup
+							type="single"
+							variant="outline"
+							size="sm"
+							value={String(props.maxSlope)}
+							onValueChange={(value) => {
+								const limit = SLOPE_LIMITS.find((l) => String(l) === value);
+								if (limit) props.onMaxSlopeChange(limit);
+							}}
+						>
+							{SLOPE_LIMITS.map((limit) => (
+								<ToggleGroupItem
+									key={limit}
+									value={String(limit)}
+									className="px-3"
+								>
+									{limit}°
+								</ToggleGroupItem>
+							))}
+						</ToggleGroup>
 					</div>
 
 					<div className="flex flex-col gap-2">

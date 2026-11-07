@@ -1,13 +1,14 @@
 import {
 	addProtocol,
 	type ExpressionSpecification,
+	type FilterSpecification,
 	type Map as MaplibreMap,
 	type VectorTileSource,
 } from "maplibre-gl";
+import { Protocol } from "pmtiles";
 
-import type { Season } from "#/lib/seasons";
-
-// The flat-ground layers on the map, fed by our /tiles route:
+// The flat-ground layers on the map, from one PMTiles file per tent and
+// season (see lib/map-data.ts; made by pipeline/flatness/src/bin/mapfiles.rs):
 //
 // - a smooth surface of scores, so the more spots for the tent, the greener
 //   the area;
@@ -15,12 +16,15 @@ import type { Season } from "#/lib/seasons";
 //   merged into one shape) in orange, which stands out from both the green
 //   and the topo map. The surface fades out as they appear.
 //
+// The files hold the data for every slope limit, so the controls only change
+// what the map draws: no new downloads, instant.
+//
 // About the surface:
-// The tiles hold one point per bin (80 m at zoom 12, doubling with each zoom
-// out) with that bin's score. A MapLibre heatmap blurs every point into its
-// surroundings and adds the blurs up. Adding up is the catch: with the
-// points this dense, the sum quickly saturates. But the points sit on a
-// regular grid, so the sum can be normalised to an average:
+// The files hold one point per square (80 m at zoom 12, doubling with each
+// zoom out) with how many of its cells are spots. A MapLibre heatmap blurs
+// every point into its surroundings and adds the blurs up. Adding up is the
+// catch: with the points this dense, the sum quickly saturates. But the
+// points sit on a regular grid, so the sum can be normalised to an average:
 //
 //   - MapLibre's blur (heatmap kernel) is a Gaussian, 0.3989 · e^(−4.5 r²/R²)
 //     for radius R. Summed over a grid with spacing d, the blurs add up to
@@ -29,16 +33,24 @@ import type { Season } from "#/lib/seasons";
 //     into a weighted average of the nearby scores: an interpolated surface.
 //   - This only holds if R/d stays the same at every zoom, see `radius` below.
 
-const SOURCE = "flat";
-const MIN_ZOOM = 5; // tiles exist for zooms 5–16 (see the tile route)
-const MAX_BIN_ZOOM = 12; // bins stop shrinking here: 80 m
-const MAX_ZOOM = 16;
+// pmtiles:// URLs are read from a PMTiles file with HTTP range requests:
+// just the bytes of each tile, from any static host or bucket.
+addProtocol("pmtiles", new Protocol().tile);
 
-// Slopes the pipeline stores: MAX_STORED_SLOPE_DEG in pipeline/flatness.
-export const MAX_SLOPE_DEG = 10;
+const SOURCE = "flat";
+const MIN_ZOOM = 5; // the files have zooms 5–16 (see mapfiles.rs)
+const SQUARE_ZOOM = 12; // squares stop shrinking here: 80 m
+
+// The slope limits the files have areas and counts for (LIMITS in
+// mapfiles.rs), in degrees.
+export const SLOPE_LIMITS = [1, 2, 3] as const;
+export type SlopeLimit = (typeof SLOPE_LIMITS)[number];
+export function isSlopeLimit(value: unknown): value is SlopeLimit {
+	return SLOPE_LIMITS.includes(value as SlopeLimit);
+}
 
 // Colours, exported so the legend uses exactly the same ones.
-// The surface: [score (see the tile route), colour].
+// The surface: [score (see `score`), colour].
 export const SCORE_COLOURS: [number, string][] = [
 	[0.05, "#e5f5e0"],
 	[0.15, "#a1d99b"],
@@ -51,7 +63,7 @@ export const AREA_COLOUR = "#f16913";
 export const AREA_OUTLINE_COLOUR = "#a63603";
 
 // Grid spacing in screen pixels at a whole zoom level, the same at every
-// level because bins double in size as the map halves in scale:
+// level because squares double in size as the map halves in scale:
 // 80 m · 4096 · 512 px / 40 075 017 m ≈ 4.2 px, stretched by 1 / cos(lat) in
 // Web Mercator, so ≈ 8.9 px at 62°N (Rondane, Dovre).
 const SPACING_PX = 8.9;
@@ -60,75 +72,67 @@ const RADIUS_PX = 2 * SPACING_PX;
 // Between whole zoom levels the map shows the tiles of the level below,
 // scaled up by up to 2×, so the spacing grows with the zoom fraction and
 // snaps back at the next level. The radius follows: R at each whole level,
-// growing exponentially to 2R just before the next. From zoom 12 the bins
+// growing exponentially to 2R just before the next. From zoom 12 the squares
 // stop shrinking (80 m), so the spacing, and the radius, simply double with
 // every zoom level in.
 function radius(): ExpressionSpecification {
 	const stops: number[] = [];
-	for (let z = MIN_ZOOM; z < MAX_BIN_ZOOM; z++) {
+	for (let z = MIN_ZOOM; z < SQUARE_ZOOM; z++) {
 		stops.push(z, RADIUS_PX, z + 0.999, 2 * RADIUS_PX);
 	}
-	stops.push(MAX_BIN_ZOOM, RADIUS_PX, 22, RADIUS_PX * 2 ** (22 - MAX_BIN_ZOOM));
+	stops.push(SQUARE_ZOOM, RADIUS_PX, 22, RADIUS_PX * 2 ** (22 - SQUARE_ZOOM));
 	return ["interpolate", ["exponential", 2], ["zoom"], ...stops];
 }
 
-export type FlatFilter = {
-	tent: string;
-	season: Season;
-	maxSlope: number;
-	minArea: number; // m²: smaller areas are left out
-	tileVersion: string; // see server/tile-version.ts
-};
-
-// MapLibre cancels tile requests it no longer needs as you pan and zoom, and
-// the dev server logs every cancelled request as an "aborted" error. Tiles
-// are cheap and cached forever (see `tileUrl`), so let them finish instead:
-// URLs starting with campfinder:// come here, and this fetches without
-// passing on MapLibre's cancel signal. MapLibre still drops the tiles it no
-// longer needs; the browser keeps them for when you pan back.
-const PROTOCOL = "campfinder";
-addProtocol(PROTOCOL, async ({ url }) => {
-	const response = await fetch(
-		url.replace(`${PROTOCOL}://`, `${window.location.origin}/`),
-	);
-	if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
-	return { data: await response.arrayBuffer() };
-});
-
-function tileUrl({ tent, season, maxSlope, minArea, tileVersion }: FlatFilter) {
-	// The version makes the URL name exactly one tile's content, so
-	// browsers may keep it forever (see the tile route's Cache-Control).
-	const params = new URLSearchParams({
-		tent,
-		season,
-		maxSlope: String(maxSlope),
-		minArea: String(minArea),
-		v: tileVersion,
-	});
-	return `${PROTOCOL}://tiles/{z}/{x}/{y}?${params}`;
+// A square's score: the square root of the share of its cells that are spots
+// at the limit (c1, c2, c3: spots at up to 1°, 2°, 3°; n: cells). A tent
+// needs one spot, not a meadow, and the square root lifts squares with a few
+// spots into view: 1 in 64 → 0.13, 6 → 0.31, a third → 0.58.
+function score(maxSlope: SlopeLimit): ExpressionSpecification {
+	return ["sqrt", ["/", ["get", `c${maxSlope}`], ["get", "n"]]];
 }
 
-// Adds the layer the first time; afterwards only swaps the tile URL so the
-// map refetches with the new filter.
-export function showFlat(map: MaplibreMap, filter: FlatFilter) {
+// The areas at the limit, at least minArea m² (smaller ones are more often
+// noise than a site).
+function areasFilter(
+	maxSlope: SlopeLimit,
+	minArea: number,
+): FilterSpecification {
+	return [
+		"all",
+		["==", ["get", "limit"], maxSlope],
+		[">=", ["get", "m2"], minArea],
+	];
+}
+
+export type FlatFilter = {
+	url: string; // the tent and season's file, as a pmtiles:// URL
+	maxSlope: SlopeLimit;
+	minArea: number; // m²
+};
+
+// Adds the layers the first time; afterwards points them at another file
+// (tent or season changed) and redraws with the filter.
+export function showFlat(
+	map: MaplibreMap,
+	{ url, maxSlope, minArea }: FlatFilter,
+) {
 	const source = map.getSource<VectorTileSource>(SOURCE);
 	if (source) {
-		source.setTiles([tileUrl(filter)]);
+		if (source.url !== url) source.setUrl(url);
+		map.setPaintProperty("flat-scores", "heatmap-weight", score(maxSlope));
+		map.setFilter("flat-areas", areasFilter(maxSlope, minArea));
+		map.setFilter("flat-area-outlines", areasFilter(maxSlope, minArea));
 		return;
 	}
-	map.addSource(SOURCE, {
-		type: "vector",
-		tiles: [tileUrl(filter)],
-		minzoom: MIN_ZOOM,
-		maxzoom: MAX_ZOOM, // zoomed in further, zoom 16 tiles are enlarged
-	});
+	map.addSource(SOURCE, { type: "vector", url });
 	map.addLayer({
 		id: "flat-scores",
 		type: "heatmap",
 		source: SOURCE,
 		"source-layer": "scores",
 		paint: {
-			"heatmap-weight": ["get", "score"],
+			"heatmap-weight": score(maxSlope),
 			"heatmap-radius": radius(),
 			"heatmap-intensity": 0.9,
 			"heatmap-opacity": [
@@ -164,6 +168,8 @@ export function showFlat(map: MaplibreMap, filter: FlatFilter) {
 		type: "fill",
 		source: SOURCE,
 		"source-layer": "areas",
+		minzoom: 14,
+		filter: areasFilter(maxSlope, minArea),
 		paint: {
 			"fill-color": AREA_COLOUR,
 			"fill-opacity": ["interpolate", ["linear"], ["zoom"], 14, 0.3, 16, 0.45],
@@ -174,6 +180,8 @@ export function showFlat(map: MaplibreMap, filter: FlatFilter) {
 		type: "line",
 		source: SOURCE,
 		"source-layer": "areas",
+		minzoom: 14,
+		filter: areasFilter(maxSlope, minArea),
 		paint: {
 			"line-color": AREA_OUTLINE_COLOUR,
 			"line-width": ["interpolate", ["linear"], ["zoom"], 14, 1, 17, 2],
