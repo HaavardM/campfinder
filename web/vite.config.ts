@@ -7,7 +7,7 @@ import { defineConfig, type Plugin } from "vite";
 // In development, serve the pipeline's map files at /map (the default
 // VITE_MAP_URL), with HTTP range requests as PMTiles needs. Only the dev
 // server: a production build never includes them; they're published to the
-// bucket separately (pipeline/publish.sh).
+// R2 bucket separately (pipeline/publish.sh).
 function localMapFiles(): Plugin {
 	return {
 		name: "local-map-files",

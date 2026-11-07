@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
-# Publishes the web app and the map's files to a Google Cloud Storage bucket
-# served as a website, in the order caching needs:
+# Uploads the map's files (data/map) to the Cloudflare R2 bucket that the
+# site's Worker serves them from (see web/wrangler.toml). The site
+# itself is built and deployed by Cloudflare on every push to GitHub.
 #
-# 1. the .pmtiles files (new names only; cached for good),
-# 2. the web app (its assets have hashed names too; index.html isn't cached),
-# 3. manifest.json last, uncached, so it never names a file that isn't there.
+# The .pmtiles files go first and manifest.json last, so the manifest never
+# names a file that isn't there yet. A .pmtiles name holds a hash of its
+# content, so one that was uploaded before (listed in data/map/.published)
+# is skipped. Older .pmtiles files stay, so browsers with the previous
+# manifest still work; delete them by hand now and then.
 #
-# Older .pmtiles files stay, so browsers with the previous manifest still
-# work; delete them by hand now and then.
-#
-# Usage: ./publish.sh gs://<bucket>
-#   Build the app first: (cd ../web && VITE_MAP_URL=/map pnpm build)
-#   For S3, the same with `aws s3 cp --cache-control ...`.
+# Usage: ./publish.sh   (log in once first: cd ../web && npx wrangler login)
+#   wrangler uploads at most about 300 MiB per file.
 set -euo pipefail
 cd "$(dirname "$0")"
-bucket=${1:?usage: ./publish.sh gs://<bucket>}
+map=$PWD/data/map
+published=$map/.published
+bucket=campfinder-map
 
-forever="public, max-age=31536000, immutable"
-gcloud storage cp --no-clobber --cache-control="$forever" data/map/*.pmtiles "$bucket/map/"
-gcloud storage cp --recursive --cache-control="$forever" ../web/dist/client/assets "$bucket/"
-gcloud storage cp --cache-control=no-cache ../web/dist/client/index.html \
-  ../web/dist/client/favicon.svg "$bucket/"
-gcloud storage cp --cache-control=no-cache data/map/manifest.json "$bucket/map/"
+cd ../web
+touch "$published"
+for file in "$map"/*.pmtiles "$map"/manifest.json; do
+  name=$(basename "$file")
+  grep -qxF "$name" "$published" && continue
+  npx wrangler r2 object put "$bucket/$name" --file "$file" --remote
+  if [[ $name == *.pmtiles ]]; then echo "$name" >> "$published"; fi
+done

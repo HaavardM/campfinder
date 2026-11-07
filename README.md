@@ -20,23 +20,54 @@ The dev server serves `pipeline/data/map/` as `/map`. See
 
 ## Put it online
 
-Any static host or bucket works (S3, Google Cloud Storage, …). Build the
-site, then publish site and map files together:
+The site runs as a Cloudflare Worker, built from GitHub. Its static files
+are served as Worker assets. The map files are too big for those (25 MiB
+per file), so they live in an R2 bucket, and the Worker's code
+([web/worker/index.ts](web/worker/index.ts)) serves them at `/map` on the
+site's own host. [wrangler.toml](web/wrangler.toml) sets the assets and the
+R2 binding.
+
+Once, in the Cloudflare dashboard:
+
+1. R2: create a bucket named `campfinder-map`.
+2. Workers & Pages → Create → Import a repository → the GitHub repository,
+   with root directory `web` and build command `pnpm build`. Keep the
+   default deploy command (`npx wrangler deploy`) and, for other branches,
+   `npx wrangler preview`.
+3. Optional, to keep the site private: Zero Trust → Access → add an
+   application for the site's domain.
+
+Then every push builds and deploys the site. After a pipeline run, upload
+the map files (log in once first with `cd web && npx wrangler login`):
 
 ```sh
-cd web && pnpm build                         # → web/dist/client/
-cd ../pipeline && ./publish.sh gs://<bucket>
+cd pipeline && ./publish.sh
 ```
 
-[publish.sh](pipeline/publish.sh) uploads in the order caching needs: the
-map files first (their names hold a hash of their content, so they're cached
-for good), then the site, and `manifest.json` last and uncached, so it never
-names a file that isn't there yet. For S3 it's the same with `aws s3 cp`.
+[publish.sh](pipeline/publish.sh) uploads the `.pmtiles` files first and
+`manifest.json` last, so the manifest never names a file that isn't there
+yet. A `.pmtiles` file's name holds a hash of its content, so browsers keep
+it for good; the manifest is fetched fresh every time.
 
-The site reads the map from `/map` on its own host. To keep the map files
-elsewhere, build with `VITE_MAP_URL=https://<host>/map pnpm build` and allow
-the site's origin in that bucket's CORS settings, including the `Range`
-header: PMTiles is read in pieces with HTTP range requests.
+The bill stays predictable. On the free plan the Worker answers 100,000
+requests a day, then fails rather than charging; every map tile the browser
+loads is one request. R2 wants a payment method on file, but stays free up to
+10 GB stored and 10 million reads a month, more than that Worker cap can
+ever ask for.
+
+That cap counts map tiles, not visitors: one session panning around can make
+hundreds of requests, so a few hundred visitors a day would use it up and the
+map would stop loading until the next day. If that ever happens, serve the
+bucket from its own subdomain instead (R2 → Settings → Custom domain; the
+domain must be on Cloudflare), build with `VITE_MAP_URL=https://<that
+domain>`, and allow the site's origin and the `Range` header in the
+bucket's CORS policy. Cloudflare's cache then answers most tile requests,
+with no daily cap; R2 reads past the free 10 million a month cost about
+$0.36 per million.
+
+To try the Worker locally: `cd web && pnpm build && npx wrangler dev`,
+after putting files in the local bucket with `npx wrangler r2 object put
+campfinder-map/<file> --file <path> --local`.
 
 ## Layout
 
