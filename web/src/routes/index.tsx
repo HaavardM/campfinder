@@ -22,7 +22,7 @@ const RONDANE: MapSearch = {
 	lon: 9.73,
 	zoom: 10,
 	basemap: "topo",
-	maxSlope: 5,
+	maxSlope: 3,
 	minArea: 300,
 };
 
