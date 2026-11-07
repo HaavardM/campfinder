@@ -1,15 +1,15 @@
 # Pipeline
 
 Turns Kartverket's 1 m terrain model into "how flat is the best tent spot"
-per 10 m cell, for each tent in [tents.toml](tents.toml), and loads the
-results into PostGIS for the web app. Runs natively on the Mac or the WSL
-Debian machine.
+per 10 m cell, for each tent in [tents.toml](tents.toml), and packs the
+results into the map's files (`data/map/`) for the web app. Runs natively on
+the Mac or the WSL Debian machine.
 
 ## Run
 
 Needs Rust (via rustup), GDAL's command-line tools (macOS: `brew install
-gdal`; Debian: `apt install gdal-bin`) and the database (`docker compose up
--d` in `../`).
+gdal`; Debian: `apt install gdal-bin`) and tippecanoe (macOS: `brew install
+tippecanoe`; Debian: `apt install tippecanoe`).
 
 ```sh
 ./run.sh                               # Rondane + Dovre
@@ -28,7 +28,7 @@ What `run.sh` does:
 | `prepare_no_go.sh` | Per region: download the N50 map data of its counties (`N50_COUNTIES`, 0.2–0.7 GB each, once) and collect where no tent may go into `data/no-go/<region>.gpkg`, with GDAL: water and streams (+2 m of shore), bogs, farmland, industry, golf courses and other land in use, roads (+8 m), tracks and trails, and 150 m around houses, cabins and built-up areas | a few seconds per county, once per region |
 | `flatness` (Rust) | Downloads terrain and surface tiles 8 at a time (17 MB each, from Kartverket's WCS) and processes each tile as soon as both are there, on every CPU | downloads: ~8 s per file and connection; processing: ~0.5 s per tile per core |
 | `gdalbuildvrt` | One mosaic per result, for QGIS | seconds |
-| `04_load_cells.sh` | New results into PostGIS in one transaction, then refresh the map's spot counts | under a minute for all regions |
+| `build_map.sh` | The map's files in `data/map/`: `mapfiles` (Rust) turns every tile's 10 m slopes into heatmap points (spot counts per square and zoom) and areas (connected spots at 1°, 2° and 3°, outlines traced), and tippecanoe packs them into one PMTiles file per tent and season, plus `manifest.json` | minutes for all regions |
 
 Downloaded tiles are stored compressed without loss, about 7.5 MB instead of
 16.8 (deflate after TIFF's floating-point predictor; see

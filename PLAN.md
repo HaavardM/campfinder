@@ -23,8 +23,8 @@ scale on many cores.
 |---|---|
 | Web app | React, TypeScript, TanStack Start |
 | UI | shadcn/ui, Tailwind, MapLibre GL JS |
-| Database | PostgreSQL + PostGIS (Docker) |
-| Pipeline | Bash, GDAL tools, osm2pgsql, SQL |
+| Map data | Files: one PMTiles per tent and season, from any static host or bucket |
+| Pipeline | Bash, GDAL tools, tippecanoe |
 | Flatness engine | Rust: `rayon` for threads, pure-Rust `tiff` for GeoTIFF, plain `Vec<f32>` grids |
 
 The pipeline runs on the WSL Debian box: AMD Ryzen 9 5950X (16 cores / 32
@@ -96,7 +96,7 @@ pipeline/
   prepare_no_go.sh       N50 no-go polygons per region, once (GDAL's ogr2ogr)
   flatness/              the Rust engine: downloads terrain and surface tiles and
                          processes them as they arrive; no-go masks with terrio
-  04_load_cells.sh       results → PostGIS, then refresh the map's spot counts
+  build_map.sh           results → the map's PMTiles files (mapfiles + tippecanoe)
   scaling.sh             speed at 1, 2, 4, … threads
 ```
 
@@ -108,25 +108,22 @@ computing distances to them, are added as extra steps.
 
 ## Data model
 
-See [db/schema.sql](db/schema.sql).
+No database: the map's data are files in `pipeline/data/map/`, made by
+[build_map.sh](pipeline/build_map.sh).
 
-```sql
-tent  (slug, name)
-spots_80m   (tent, season, bx, by, slopes, cells_up_to_step) -- 8 × 8 cells ≤ 10° per 80 m square
-spot_counts (tent, season, zoom, bx, by, cells_up_to_step)   -- view: summed into larger squares
-loaded_files (tile, tent, season, csv_mtime)                 -- what the loader has done
+```text
+manifest.json                         tents, and which file is which tent and season
+<tent>.<season>.<build time>.pmtiles  all map tiles, zoom 5–16, two layers:
+  scores   heatmap points, one per square (80 m at zoom 12, doubling outwards):
+           c1, c2, c3 = cells that are spots at up to 1°, 2°, 3°; n = cells
+  areas    from zoom 13: connected spots at each limit, outlines traced:
+           limit (1, 2, 3), m2, x/y (a UTM point inside), best (flattest cell)
 ```
 
-Sized to what the map reads. A `spots_80m` row holds its 64 cells' slopes as one
-byte each (tenths of a degree) and how many cells are up to 0.5°, 1°, …, so the
-database spends its space on data rather than on Postgres's ~30 bytes of
-per-row overhead: 9 GB as a row per cell became about 0.5 GB, 19× less.
-Heading and elevation stay in the GeoTIFFs for QGIS.
-
-`spot_counts` is a materialized view, refreshed after each load: 160 m squares
-at zoom 11 from the 80 m squares, each zoom out merging 2 × 2. Zoomed-out tiles
-read only the step counts, so a tile costs the same however much data
-there is.
+PMTiles holds every tile in one file with an index, so the browser reads
+just the pieces it needs with HTTP range requests, from any bucket. The
+files carry all three limits, so the map's controls only filter: no new
+downloads. Heading and elevation stay in the GeoTIFFs for QGIS.
 
 ## Web app
 
@@ -157,6 +154,8 @@ zoom 14), it shows the spots themselves, merged into orange areas.
    version, then run on Rondane and Dovre. Check the results in QGIS against
    spots you know.
 3. **Heatmap.** Vector tiles, tent and slope controls, cells when zoomed in.
+   (First served from PostGIS; now static PMTiles files, so the whole app
+   can live in a bucket.)
 4. **Spot details.** Click a cell to see its details and tent outline.
 5. **Later.** Roads and parking with distance filters, small ponds (from
    the lidar), protected-area rules, saved spots, walking distance over

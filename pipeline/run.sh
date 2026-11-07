@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The whole pipeline: no-go areas, download + process, QGIS mosaics, and
-# loading into PostGIS.
+# The whole pipeline: no-go areas, download + process, QGIS mosaics, and the
+# map's files (data/map/).
 #
 # Usage: ./run.sh [options] [regions/x.env ...]
 #
@@ -8,8 +8,8 @@
 # flatness engine (see flatness/src/main.rs), e.g. --force, --threads 8.
 # Safe to rerun at any time: only missing work is done.
 #
-# Needs Rust, GDAL's command-line tools (for N50 and the mosaics) and the
-# database from ../docker-compose.yml.
+# Needs Rust, GDAL's command-line tools (for N50 and the mosaics) and
+# tippecanoe (for the map's files).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -33,4 +33,5 @@ for kind in $kinds; do
 done
 echo "QGIS mosaics: data/flatness/*.vrt"
 
-./04_load_cells.sh
+# The map's files, in data/map/: upload them (see README.md).
+./build_map.sh

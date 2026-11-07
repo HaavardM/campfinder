@@ -9,7 +9,6 @@ use crate::tents::Footprint;
 
 /// Work tiles are 2 × 2 km squares on a grid aligned to multiples of 2000 m
 /// in EPSG:25833 (UTM zone 33N). A tile is named after its south-west corner.
-/// Must match `TILE_M` in `04_load_cells.sh`.
 pub const TILE_SIZE_M: usize = 2000;
 /// Each tile's terrain is downloaded with this much extra border, so a tent
 /// near the tile edge still sees the ground around it.

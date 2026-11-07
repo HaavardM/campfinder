@@ -28,7 +28,7 @@ use flatness::region::{Region, tile_name};
 use flatness::tents::{Footprint, Shape, Tent, TentsFile};
 use flatness::terrain::{mark_low_shore, mark_obstacles, mark_smooth, pixel_cost};
 use flatness::tile::{
-    BUFFER_M, CELL_SIZE_M, CELLS_PER_SIDE, CellResult, DTM_SIZE_PX, TILE_SIZE_M, best_placement,
+    BUFFER_M, CELL_SIZE_M, CELLS_PER_SIDE, DTM_SIZE_PX, TILE_SIZE_M, best_placement,
     bordered_box, cell_elevation, summarise,
 };
 use progress::{Progress, minutes_seconds};
@@ -349,7 +349,6 @@ fn process(job: &Job, setup: &Setup) -> Result<String, String> {
         for (season, cost) in &seasons {
             let cells = summarise(&best_placement(cost, &setup.footprints[t]));
             let file = |kind: &str| out_dir.join(format!("{}.{season}.{kind}", tent.slug()));
-            write_blocks_csv(&file("blocks.csv"), job, &tent.slug(), season, &cells)?;
             geotiff::write_f32(&file("slope.tif"), n, n, &cells.max_slope, &at)?;
             if let Shape::Rectangle { .. } = tent.shape {
                 geotiff::write_i16(&file("heading.tif"), n, n, &cells.heading, &at)?;
@@ -368,81 +367,6 @@ fn process(job: &Job, setup: &Setup) -> Result<String, String> {
         job.tents.len(),
         megapixels / seconds
     ))
-}
-
-/// Cells up to this steep go to the database. Steeper ones are useless for
-/// a tent (and the map's slope slider stops here).
-const MAX_STORED_SLOPE_DEG: f32 = 10.0;
-/// The database stores cells in square blocks of this many per side (80 m),
-/// one row per block: a row per cell would spend more on Postgres's per-row
-/// overhead (~30 bytes) than on the data. Also the map's finest bins.
-const BLOCK_CELLS: usize = 8;
-/// Slopes are counted per 0.5° step for the map's score (the slider moves in
-/// 0.5° too): 20 steps reach MAX_STORED_SLOPE_DEG.
-const SLOPE_STEPS: usize = (MAX_STORED_SLOPE_DEG * 2.0) as usize;
-/// A cell's byte in a block when no tent fits or it's too steep to store.
-const NO_SPOT: u8 = 255;
-
-/// One row per 80 m block with at least one usable cell, ready for Postgres
-/// `COPY` into table `spots_80m` (see db/schema.sql): tent, season, block column
-/// and row (x / 80, y / 80 in EPSG:25833), the 64 cells' slopes as bytes, and
-/// how many cells are up to 0.5°, 1°, 1.5°, … steep.
-fn write_blocks_csv(
-    path: &Path,
-    job: &Job,
-    tent: &str,
-    season: &str,
-    cells: &CellResult,
-) -> Result<(), String> {
-    use std::fmt::Write;
-    let block_m = BLOCK_CELLS * CELL_SIZE_M;
-    let blocks_per_side = CELLS_PER_SIDE / BLOCK_CELLS;
-    let mut csv = String::from("tent,season,bx,by,slopes,cells_up_to_step\n");
-    for block_row in 0..blocks_per_side {
-        for block_col in 0..blocks_per_side {
-            // Bytes go row by row from the block's south-west corner.
-            let mut slopes = [NO_SPOT; BLOCK_CELLS * BLOCK_CELLS];
-            // Element k: cells up to 0.5·(k + 1) degrees.
-            let mut up_to_step = [0u32; SLOPE_STEPS];
-            for r in 0..BLOCK_CELLS {
-                for c in 0..BLOCK_CELLS {
-                    // Cell rows count from the south here, but from the
-                    // north in `cells` (row 0 is the tile's northern edge).
-                    let row = CELLS_PER_SIDE - 1 - (block_row * BLOCK_CELLS + r);
-                    let slope = cells.max_slope[row * CELLS_PER_SIDE + block_col * BLOCK_CELLS + c];
-                    if slope.is_nan() || slope > MAX_STORED_SLOPE_DEG {
-                        continue; // nothing fits, or too steep
-                    }
-                    // Tenths of a degree, rounded up: never flatter than it is.
-                    let tenths = (slope * 10.0).ceil() as u8;
-                    slopes[r * BLOCK_CELLS + c] = tenths;
-                    // 0.1–0.5° → step 1, 0.6–1.0° → step 2, … (0° too → 1). The
-                    // cell counts for its own step and every steeper one, so
-                    // the map's score at a max slope is one array lookup:
-                    // cells up to 2° = element 4.
-                    let step = (tenths as usize).div_ceil(5).max(1);
-                    for count in &mut up_to_step[step - 1..] {
-                        *count += 1;
-                    }
-                }
-            }
-            if up_to_step[SLOPE_STEPS - 1] == 0 {
-                continue; // no spot in this block
-            }
-            let bx = job.east as usize / block_m + block_col;
-            let by = job.north as usize / block_m + block_row;
-            // bytea as hex ("\x0a1bff…"), the array as "{0,3,…}" in quotes.
-            let hex: String = slopes.iter().map(|b| format!("{b:02x}")).collect();
-            let counts: Vec<String> = up_to_step.iter().map(u32::to_string).collect();
-            writeln!(
-                csv,
-                "{tent},{season},{bx},{by},\\x{hex},\"{{{}}}\"",
-                counts.join(",")
-            )
-            .unwrap();
-        }
-    }
-    write_atomic(path, csv.as_bytes())
 }
 
 const ELEVATION_FILE: &str = "elevation.tif";

@@ -1,7 +1,11 @@
 //! Turns the engine's results into what the map shows, as GeoJSON for
 //! tippecanoe (which packs them into one PMTiles file per tent and season):
 //!
-//!   mapfiles [--data data] OUT_DIR
+//!   mapfiles [--data data] --stamp 20261107T0930 OUT_DIR
+//!
+//! It also writes `manifest.json` for the web app: the tents (from
+//! data/flatness/tents.csv), and per tent and season the PMTiles file name
+//! (`<tent>.<season>.<stamp>.pmtiles`, which build_map.sh then makes).
 //!
 //! For every tent and season, from every tile's 10 m slope GeoTIFF:
 //!
@@ -40,14 +44,16 @@ type Cell = (i32, i32);
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut data = PathBuf::from("data");
-    let mut out = None;
+    let (mut stamp, mut out) = (None, None);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--data" => data = PathBuf::from(args.next().expect("--data needs a value")),
+            "--stamp" => stamp = args.next(),
             _ => out = Some(PathBuf::from(arg)),
         }
     }
-    let out = out.expect("usage: mapfiles [--data data] OUT_DIR");
+    let usage = "usage: mapfiles [--data data] --stamp STAMP OUT_DIR";
+    let (stamp, out) = (stamp.expect(usage), out.expect(usage));
     std::fs::create_dir_all(&out).expect("can't create the output folder");
 
     // Which tent and season files exist: "keron-4-gt.summer.slope.tif".
@@ -66,6 +72,9 @@ fn main() {
         }
     }
 
+    kinds.sort();
+    write_manifest(&data, &out, &kinds, &stamp);
+
     kinds.par_iter().for_each(|(tent, season)| {
         let started = std::time::Instant::now();
         let spots = read_spots(&data, tent, season);
@@ -83,6 +92,40 @@ fn main() {
             started.elapsed().as_secs_f64()
         );
     });
+}
+
+/// The web app's manifest.json: tents with their names, and the file for
+/// each tent and season.
+fn write_manifest(data: &Path, out: &Path, kinds: &[(String, String)], stamp: &str) {
+    // tents.csv: `slug,"Name"` lines after a header, written by the engine.
+    let csv = std::fs::read_to_string(data.join("flatness/tents.csv")).expect("no tents.csv");
+    let tents: Vec<String> = csv
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_once(','))
+        .map(|(slug, name)| {
+            let name = name.trim_matches('"').replace("\"\"", "\"");
+            format!(r#"{{"slug":{},"name":{}}}"#, json_string(slug), json_string(&name))
+        })
+        .collect();
+    let files: Vec<String> = kinds
+        .iter()
+        .map(|(tent, season)| {
+            let key = format!("{tent}.{season}");
+            format!("{}:{}", json_string(&key), json_string(&format!("{key}.{stamp}.pmtiles")))
+        })
+        .collect();
+    let json = format!(
+        "{{\"tents\":[{}],\"files\":{{{}}}}}\n",
+        tents.join(","),
+        files.join(",")
+    );
+    std::fs::write(out.join("manifest.json"), json).unwrap();
+}
+
+/// A string as JSON: quoted, with quotes and backslashes escaped.
+fn json_string(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn tile_dirs(data: &Path) -> Vec<PathBuf> {
