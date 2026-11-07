@@ -175,4 +175,26 @@ export function showFlat(map: MaplibreMap, filter: FlatFilter) {
 			"line-width": ["interpolate", ["linear"], ["zoom"], 14, 1, 17, 2],
 		},
 	});
+
+	// Click an area to see it in Norge i bilder: Kartverket's aerial photos,
+	// sharp enough to see the ground (10–25 cm per pixel), also in 3D. It
+	// can't be a layer here (its map services need a licence), but its
+	// website is free and takes a box in UTM 33 in its URL.
+	map.on("click", "flat-areas", (event) => {
+		const area = event.features?.[0]?.properties;
+		if (area)
+			window.open(norgeIBilderUrl(area.x, area.y), "_blank", "noreferrer");
+	});
+	map.on("mouseenter", "flat-areas", () => {
+		map.getCanvas().style.cursor = "pointer";
+	});
+	map.on("mouseleave", "flat-areas", () => {
+		map.getCanvas().style.cursor = "";
+	});
+}
+
+// A 400 × 300 m view around a point given in UTM 33 metres (EPSG:25833).
+function norgeIBilderUrl(x: number, y: number) {
+	const box = `xmin=${x - 200}&xmax=${x + 200}&ymin=${y - 150}&ymax=${y + 150}`;
+	return `https://norgeibilder.no/?wkid=25833&is3d=false&${box}`;
 }

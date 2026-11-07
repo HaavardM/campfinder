@@ -158,7 +158,12 @@ function tile(
 			-- UTM, where the squares line up exactly, then moved to Web
 			-- Mercator. Areas smaller than minArea (m², measured in UTM) are
 			-- left out: a lone 10 m square is more often noise than a site.
-			SELECT ST_AsMVTGeom(ST_Transform(area, 3857), tile.web) AS geom
+			-- Each area also carries a point inside it in UTM metres (for the
+			-- link to Norge i bilder, which takes UTM) and its size.
+			SELECT ST_AsMVTGeom(ST_Transform(area, 3857), tile.web) AS geom,
+			       ST_X(ST_PointOnSurface(area))::int AS x,
+			       ST_Y(ST_PointOnSurface(area))::int AS y,
+			       ST_Area(area)::int AS m2
 			FROM (
 				SELECT (ST_Dump(ST_CoverageUnion(ST_MakeEnvelope(x, y, x + 10, y + 10, 25833)))).geom AS area
 				FROM spots
