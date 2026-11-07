@@ -1,5 +1,5 @@
+# Packages allowed to run their install scripts (they fetch native binaries).
 allowBuilds:
   esbuild: true
   lightningcss: true
-packages:
-  - .
+  workerd: true

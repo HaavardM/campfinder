@@ -1,0 +1,22 @@
+# Cloudflare Worker, built from GitHub (pnpm build, then wrangler deploy):
+# the site's static files, plus worker/index.ts serving the map's files
+# from R2 at /map.
+name = "campfinder"
+main = "worker/index.ts"
+compatibility_date = "2026-11-01"
+
+# The built site. Unknown paths get index.html, as a single-page app wants.
+# /map/* always goes to the Worker; nothing else does.
+[assets]
+directory = "dist/client"
+not_found_handling = "single-page-application"
+run_worker_first = ["/map/*"]
+
+# The map's files (pipeline/data/map, uploaded by pipeline/publish.sh).
+[[r2_buckets]]
+binding = "MAP"
+bucket_name = "campfinder-map"
+
+# Required by `wrangler preview`, which builds branches other than main.
+# Empty: previews use the settings above.
+[previews]
