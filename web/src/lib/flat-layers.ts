@@ -73,6 +73,7 @@ function radius(): ExpressionSpecification {
 export type FlatFilter = {
 	tent: string;
 	maxSlope: number;
+	minArea: number; // m²: smaller areas are left out
 	tileVersion: string; // see server/tile-version.ts
 };
 
@@ -91,12 +92,13 @@ addProtocol(PROTOCOL, async ({ url }) => {
 	return { data: await response.arrayBuffer() };
 });
 
-function tileUrl({ tent, maxSlope, tileVersion }: FlatFilter) {
+function tileUrl({ tent, maxSlope, minArea, tileVersion }: FlatFilter) {
 	// The version makes the URL name exactly one tile's content, so
 	// browsers may keep it forever (see the tile route's Cache-Control).
 	const params = new URLSearchParams({
 		tent,
 		maxSlope: String(maxSlope),
+		minArea: String(minArea),
 		v: tileVersion,
 	});
 	return `${PROTOCOL}://tiles/{z}/{x}/{y}?${params}`;

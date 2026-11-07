@@ -1,4 +1,4 @@
-import { Tent } from "lucide-react";
+import { Satellite, Tent } from "lucide-react";
 import { useState } from "react";
 
 import { PlaceSearch } from "#/components/place-search";
@@ -30,6 +30,9 @@ type Props = {
 	onTentChange: (tent: string) => void;
 	maxSlope: number;
 	onMaxSlopeChange: (maxSlope: number) => void;
+	minArea: number;
+	onMinAreaChange: (minArea: number) => void;
+	photoUrl: string;
 	basemap: Basemap;
 	onBasemapChange: (basemap: Basemap) => void;
 	onPlaceSelect: (place: Place) => void;
@@ -38,9 +41,10 @@ type Props = {
 
 // The floating panel in the top-left corner of the map.
 export function MapPanel(props: Props) {
-	// The slider shows its value while dragging, but only updates the map
-	// (and refetches tiles) when released.
+	// The sliders show their value while dragging, but only update the map
+	// (and refetch tiles) when released.
 	const [slope, setSlope] = useState(props.maxSlope);
+	const [area, setArea] = useState(props.minArea);
 
 	return (
 		<Card className="absolute top-3 left-3 z-10 w-[min(20rem,calc(100vw-5rem))] gap-0 py-0 shadow-lg">
@@ -82,6 +86,22 @@ export function MapPanel(props: Props) {
 						/>
 					</div>
 
+					<div className="flex flex-col gap-2">
+						<div className="flex justify-between text-sm">
+							<span className="text-muted-foreground">Min area</span>
+							<span className="font-medium tabular-nums">{area} m²</span>
+						</div>
+						<Slider
+							min={100}
+							max={2000}
+							step={100}
+							value={[area]}
+							onValueChange={([value]) => setArea(value)}
+							onValueCommit={([value]) => props.onMinAreaChange(value)}
+							aria-label="Min area"
+						/>
+					</div>
+
 					<ScoreLegend />
 				</div>
 
@@ -99,23 +119,35 @@ export function MapPanel(props: Props) {
 						))}
 					</div>
 
-					<ToggleGroup
-						type="single"
-						variant="outline"
-						size="sm"
-						value={props.basemap}
-						// Radix sends "" when the active item is clicked again; ignore it
-						// so one basemap is always selected.
-						onValueChange={(value) => {
-							if (isBasemap(value)) props.onBasemapChange(value);
-						}}
-					>
-						{Object.entries(BASEMAPS).map(([name, { label }]) => (
-							<ToggleGroupItem key={name} value={name} className="px-2.5">
-								{label}
-							</ToggleGroupItem>
-						))}
-					</ToggleGroup>
+					<div className="flex gap-1">
+						<Button asChild variant="outline" size="sm" className="px-2.5">
+							<a
+								href={props.photoUrl}
+								target="_blank"
+								rel="noreferrer"
+								title="Satellite photo of this view (Google Maps)"
+							>
+								<Satellite />
+							</a>
+						</Button>
+						<ToggleGroup
+							type="single"
+							variant="outline"
+							size="sm"
+							value={props.basemap}
+							// Radix sends "" when the active item is clicked again; ignore it
+							// so one basemap is always selected.
+							onValueChange={(value) => {
+								if (isBasemap(value)) props.onBasemapChange(value);
+							}}
+						>
+							{Object.entries(BASEMAPS).map(([name, { label }]) => (
+								<ToggleGroupItem key={name} value={name} className="px-2.5">
+									{label}
+								</ToggleGroupItem>
+							))}
+						</ToggleGroup>
+					</div>
 				</div>
 			</CardContent>
 		</Card>

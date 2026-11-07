@@ -14,6 +14,7 @@ type MapSearch = MapView & {
 	basemap: Basemap;
 	tent?: string; // tent slug; the first tent if not set
 	maxSlope: number; // degrees
+	minArea: number; // m²: smaller areas with room for the tent are left out
 };
 
 const RONDANE: MapSearch = {
@@ -22,6 +23,7 @@ const RONDANE: MapSearch = {
 	zoom: 10,
 	basemap: "topo",
 	maxSlope: 5,
+	minArea: 300,
 };
 
 function numberOr(value: unknown, fallback: number) {
@@ -38,6 +40,7 @@ export const Route = createFileRoute("/")({
 		basemap: isBasemap(search.basemap) ? search.basemap : RONDANE.basemap,
 		tent: typeof search.tent === "string" ? search.tent : undefined,
 		maxSlope: numberOr(search.maxSlope, RONDANE.maxSlope),
+		minArea: numberOr(search.minArea, RONDANE.minArea),
 	}),
 	loader: async () => {
 		const [tents, tileVersion] = await Promise.all([
@@ -86,9 +89,10 @@ function MapPage() {
 
 	useEffect(() => {
 		if (map && tent) {
-			showFlat(map, { tent, maxSlope: search.maxSlope, tileVersion });
+			const { maxSlope, minArea } = search;
+			showFlat(map, { tent, maxSlope, minArea, tileVersion });
 		}
-	}, [map, tent, search.maxSlope, tileVersion]);
+	}, [map, tent, search.maxSlope, search.minArea, tileVersion]);
 
 	return (
 		<main className="relative h-dvh w-full">
@@ -111,6 +115,16 @@ function MapPage() {
 						replace: true,
 					})
 				}
+				minArea={search.minArea}
+				onMinAreaChange={(minArea) =>
+					navigate({
+						search: (previous) => ({ ...previous, minArea }),
+						replace: true,
+					})
+				}
+				// Google's satellite view of the same place, to look at the
+				// ground itself (Kartverket's aerial photos need a licence).
+				photoUrl={`https://www.google.com/maps/@${search.lat},${search.lon},${Math.round(search.zoom)}z/data=!3m1!1e3`}
 				basemap={search.basemap}
 				onBasemapChange={(basemap) =>
 					navigate({

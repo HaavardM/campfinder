@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 
 import { sql } from "#/server/db";
 
-// GET /tiles/{z}/{x}/{y}?tent=keron-4-gt&maxSlope=5&v=3.1730900000
+// GET /tiles/{z}/{x}/{y}?tent=keron-4-gt&maxSlope=5&minArea=300&v=3.1730900000
 // (v only makes the URL unique per data and format version, for caching:
 // change TILE_FORMAT in server/tile-version.ts with any change below that
 // changes what a tile holds.)
@@ -45,16 +45,20 @@ export const Route = createFileRoute("/tiles/$z/$x/$y")({
 				const search = new URL(request.url).searchParams;
 				const tent = search.get("tent");
 				const maxSlope = Number(search.get("maxSlope") || Number.NaN);
-				if (!tent || ![z, x, y, maxSlope].every(Number.isFinite)) {
-					return new Response("expected /tiles/z/x/y?tent=…&maxSlope=…", {
-						status: 400,
-					});
+				const minArea = Number(search.get("minArea") || Number.NaN);
+				if (!tent || ![z, x, y, maxSlope, minArea].every(Number.isFinite)) {
+					return new Response(
+						"expected /tiles/z/x/y?tent=…&maxSlope=…&minArea=…",
+						{
+							status: 400,
+						},
+					);
 				}
 				if (z < MIN_ZOOM || z > MAX_ZOOM) {
 					return new Response(null, { status: 204 });
 				}
 
-				const [row] = await tile(z, x, y, tent, maxSlope);
+				const [row] = await tile(z, x, y, tent, maxSlope, minArea);
 				return new Response(row.mvt, {
 					headers: {
 						"Content-Type": "application/vnd.mapbox-vector-tile",
@@ -79,7 +83,14 @@ function nearTile(size: number) {
 		AND b.by BETWEEN floor(ST_YMin(tile.utm) / ${size})::int - 1 AND floor(ST_YMax(tile.utm) / ${size})::int + 1`;
 }
 
-function tile(z: number, x: number, y: number, tent: string, maxSlope: number) {
+function tile(
+	z: number,
+	x: number,
+	y: number,
+	tent: string,
+	maxSlope: number,
+	minArea: number,
+) {
 	// Bins double in size with each zoom level out: 80 m at zoom 12, 160 m
 	// at 11, … so they always look about the same size on screen.
 	const binZoom = Math.min(z, MAX_BIN_ZOOM);
@@ -101,6 +112,7 @@ function tile(z: number, x: number, y: number, tent: string, maxSlope: number) {
 			       ST_Transform(ST_TileEnvelope(${z}, ${x}, ${y}), 25833) AS utm,
 			       ${z}::int AS z,
 			       ${maxSlope}::real AS max_slope,
+			       ${minArea}::real AS min_area,
 			       ${cellsPerBin}::real AS cells_per_bin
 		),
 		scored AS (
@@ -144,12 +156,14 @@ function tile(z: number, x: number, y: number, tent: string, maxSlope: number) {
 			-- is made for shapes that only touch along shared edges, like grid
 			-- squares, and is much faster than a general ST_Union. Merged in
 			-- UTM, where the squares line up exactly, then moved to Web
-			-- Mercator.
+			-- Mercator. Areas smaller than minArea (m², measured in UTM) are
+			-- left out: a lone 10 m square is more often noise than a site.
 			SELECT ST_AsMVTGeom(ST_Transform(area, 3857), tile.web) AS geom
 			FROM (
 				SELECT (ST_Dump(ST_CoverageUnion(ST_MakeEnvelope(x, y, x + 10, y + 10, 25833)))).geom AS area
 				FROM spots
 			) merged, tile
+			WHERE ST_Area(area) >= tile.min_area
 		)
 		SELECT (SELECT ST_AsMVT(points, 'scores') FROM points)
 		    || (SELECT ST_AsMVT(areas, 'areas') FROM areas) AS mvt`;

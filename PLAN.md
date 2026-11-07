@@ -139,8 +139,12 @@ zoom 14), it shows the spots themselves, merged into orange areas.
 - **Smooth surface:** one point per bin, drawn as a MapLibre heatmap whose
   blur is normalised to a weighted average of nearby scores, so it
   interpolates rather than piling up (see `web/src/lib/flat-layers.ts`).
-- **Controls:** tent, max slope, place search, region buttons, topo/grey
-  basemap; everything kept in the URL.
+- **Min area:** orange areas smaller than this (default 300 m²) are hidden:
+  a lone 10 m cell is more often noise than a campsite.
+- **Controls:** tent, max slope, min area, place search, region buttons,
+  topo/grey basemap, and a button to the same view in Google's satellite
+  photos, to check the ground before driving (Kartverket's own aerial
+  photos need a licence); everything kept in the URL.
 
 ## Phases
 
