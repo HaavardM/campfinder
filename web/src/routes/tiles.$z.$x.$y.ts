@@ -1,8 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { isSeason, type Season } from "#/lib/seasons";
 import { sql } from "#/server/db";
 
-// GET /tiles/{z}/{x}/{y}?tent=keron-4-gt&season=summer&maxSlope=5&minArea=300&v=3.1730900000
+// GET /tiles/{z}/{x}/{y}?tent=keron-4-gt&season=summer&maxSlope=3&minArea=300&v=4.1730900000
 // (season: summer, or winter, when snow covers bogs.)
 // (v only makes the URL unique per data and format version, for caching:
 // change TILE_FORMAT in server/tile-version.ts with any change below that
@@ -49,27 +50,24 @@ export const Route = createFileRoute("/tiles/$z/$x/$y")({
 				const maxSlope = Number(search.get("maxSlope") || Number.NaN);
 				const minArea = Number(search.get("minArea") || Number.NaN);
 				const numbers = [z, x, y, maxSlope, minArea];
-				const seasonOk = season === "summer" || season === "winter";
-				if (!tent || !seasonOk || !numbers.every(Number.isFinite)) {
-					return new Response(
-						"expected /tiles/z/x/y?tent=…&season=summer|winter&maxSlope=…&minArea=…",
-						{
-							status: 400,
-						},
-					);
+				if (!tent || !isSeason(season) || !numbers.every(Number.isFinite)) {
+					const usage =
+						"expected /tiles/z/x/y?tent=…&season=summer|winter&maxSlope=…&minArea=…";
+					return new Response(usage, { status: 400 });
 				}
 				if (z < MIN_ZOOM || z > MAX_ZOOM) {
 					return new Response(null, { status: 204 });
 				}
 
-				const [row] = await tile(z, x, y, tent, season, maxSlope, minArea);
+				const [row] = await tile(z, x, y, { tent, season, maxSlope, minArea });
 				return new Response(row.mvt, {
 					headers: {
 						"Content-Type": "application/vnd.mapbox-vector-tile",
-						// Keep forever: the tile URL carries the data's and the tile
-						// format's versions (see lib/flat-layers.ts), so new data or
-						// new code means new URLs, never a stale tile.
-						"Cache-Control": "public, max-age=31536000, immutable",
+						// Keep: the tile URL carries the data's and the tile format's
+						// versions (see server/tile-version.ts), so new data or new
+						// code means new URLs. A day, not forever: the version changes
+						// ~15 s before the zoomed-out counts are refreshed.
+						"Cache-Control": "public, max-age=86400, immutable",
 					},
 				});
 			},
@@ -87,15 +85,15 @@ function nearTile(size: number) {
 		AND b.by BETWEEN floor(ST_YMin(tile.utm) / ${size})::int - 1 AND floor(ST_YMax(tile.utm) / ${size})::int + 1`;
 }
 
-function tile(
-	z: number,
-	x: number,
-	y: number,
-	tent: string,
-	season: string,
-	maxSlope: number,
-	minArea: number,
-) {
+type Filter = {
+	tent: string;
+	season: Season;
+	maxSlope: number;
+	minArea: number;
+};
+
+function tile(z: number, x: number, y: number, filter: Filter) {
+	const { tent, season, maxSlope, minArea } = filter;
 	// Bins double in size with each zoom level out: 80 m at zoom 12, 160 m
 	// at 11, … so they always look about the same size on screen.
 	const binZoom = Math.min(z, MAX_BIN_ZOOM);
@@ -167,14 +165,17 @@ function tile(
 			-- Each area also carries a point inside it in UTM metres (for the
 			-- link to Norge i bilder, which takes UTM) and its size.
 			SELECT ST_AsMVTGeom(ST_Transform(area, 3857), tile.web) AS geom,
-			       ST_X(ST_PointOnSurface(area))::int AS x,
-			       ST_Y(ST_PointOnSurface(area))::int AS y,
-			       ST_Area(area)::int AS m2
+			       ST_X(inside)::int AS x,
+			       ST_Y(inside)::int AS y,
+			       m2::int AS m2
 			FROM (
-				SELECT (ST_Dump(ST_CoverageUnion(ST_MakeEnvelope(x, y, x + 10, y + 10, 25833)))).geom AS area
-				FROM spots
-			) merged, tile
-			WHERE ST_Area(area) >= tile.min_area
+				SELECT area, ST_PointOnSurface(area) AS inside, ST_Area(area) AS m2
+				FROM (
+					SELECT (ST_Dump(ST_CoverageUnion(ST_MakeEnvelope(x, y, x + 10, y + 10, 25833)))).geom AS area
+					FROM spots
+				) merged
+			) measured, tile
+			WHERE m2 >= tile.min_area
 		)
 		SELECT (SELECT ST_AsMVT(points, 'scores') FROM points)
 		    || (SELECT ST_AsMVT(areas, 'areas') FROM areas) AS mvt`;

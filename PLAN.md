@@ -52,7 +52,8 @@ guy lines. Starting with the Gamme 8 PC (round, 4.32 m) and the Keron 4 GT
 (5 × 2.1 m).
 
 Each 1 m pixel gets a cost: its slope in degrees, or infinity if a tent
-can't stand there. That covers no-go areas (N50: water, bogs, near houses),
+can't stand there. That covers no-go areas (N50: water, roads, land in use,
+near houses, and bogs in summer only),
 anything standing on the ground (surface model), low ground right by water,
 interpolated (unnaturally smooth) ground, missing data, and rough
 ground: more than 0.1 m above or below the average of its 3×3 neighbours,
@@ -95,7 +96,7 @@ pipeline/
   prepare_no_go.sh       N50 no-go polygons per region, once (GDAL's ogr2ogr)
   flatness/              the Rust engine: downloads terrain and surface tiles and
                          processes them as they arrive; no-go masks with terrio
-  04_load_cells.sh       results → PostGIS, then rebuild the map's bins
+  04_load_cells.sh       results → PostGIS, then refresh the map's spot counts
   scaling.sh             speed at 1, 2, 4, … threads
 ```
 
@@ -142,10 +143,11 @@ zoom 14), it shows the spots themselves, merged into orange areas.
   interpolates rather than piling up (see `web/src/lib/flat-layers.ts`).
 - **Min area:** orange areas smaller than this (default 300 m²) are hidden:
   a lone 10 m cell is more often noise than a campsite.
-- **Controls:** tent, max slope, min area, place search, region buttons,
-  topo/grey basemap, and a button to the same view in Google's satellite
-  photos, to check the ground before driving (Kartverket's own aerial
-  photos need a licence); everything kept in the URL.
+- **Controls:** tent, summer/winter, max slope, min area, place search,
+  region buttons, topo/grey basemap; everything kept in the URL.
+- **Look before driving:** click an area to open it in Norge i bilder
+  (Kartverket's aerial photos, also 3D; a website link, since its map
+  services need a licence), or open the view in Google's satellite photos.
 
 ## Phases
 

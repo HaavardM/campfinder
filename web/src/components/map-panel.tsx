@@ -17,14 +17,12 @@ import { BASEMAPS, type Basemap, isBasemap } from "#/lib/basemaps";
 import {
 	AREA_COLOUR,
 	AREA_OUTLINE_COLOUR,
-	isSeason,
 	MAX_SLOPE_DEG,
 	SCORE_COLOURS,
-	SEASONS,
-	type Season,
 } from "#/lib/flat-layers";
 import type { Place } from "#/lib/place-search";
 import { REGIONS, type Region } from "#/lib/regions";
+import { isSeason, SEASONS, type Season } from "#/lib/seasons";
 import type { Tent as TentRow } from "#/server/tents";
 
 type Props = {

@@ -5,6 +5,8 @@ import {
 	type VectorTileSource,
 } from "maplibre-gl";
 
+import type { Season } from "#/lib/seasons";
+
 // The flat-ground layers on the map, fed by our /tiles route:
 //
 // - a smooth surface of scores, so the more spots for the tent, the greener
@@ -68,13 +70,6 @@ function radius(): ExpressionSpecification {
 	}
 	stops.push(MAX_BIN_ZOOM, RADIUS_PX, 22, RADIUS_PX * 2 ** (22 - MAX_BIN_ZOOM));
 	return ["interpolate", ["exponential", 2], ["zoom"], ...stops];
-}
-
-// Results are computed for both: in winter, snow covers the bogs.
-export const SEASONS = { summer: "Summer", winter: "Winter" } as const;
-export type Season = keyof typeof SEASONS;
-export function isSeason(value: unknown): value is Season {
-	return typeof value === "string" && value in SEASONS;
 }
 
 export type FlatFilter = {
@@ -202,6 +197,11 @@ export function showFlat(map: MaplibreMap, filter: FlatFilter) {
 	map.on("mouseleave", "flat-areas", () => {
 		map.getCanvas().style.cursor = "";
 	});
+}
+
+// Google's satellite photos of a map view, for a second look at the ground.
+export function googleSatelliteUrl(lat: number, lon: number, zoom: number) {
+	return `https://www.google.com/maps/@${lat},${lon},${Math.round(zoom)}z/data=!3m1!1e3`;
 }
 
 // A view around a point given in UTM 33 metres (EPSG:25833), close enough

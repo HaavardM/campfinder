@@ -17,9 +17,10 @@ use crate::grid::Grid;
 /// turns into SIMD instructions (8 floats at a time with AVX2), and they walk
 /// memory in order. Cleverer algorithms (van Herk / Gil-Werman) cost a fixed
 /// 3 comparisons per pixel whatever the window, but their steps depend on each
-/// other, so they can't use SIMD. Our windows are at most 12 px (the tile
+/// other, so they can't use SIMD. Tent windows are at most 12 px (the tile
 /// border limits them), and at that size the simple version measured several
-/// times faster.
+/// times faster. (The low-shore rule's 61 px window costs more passes, still
+/// a small part of a tile.)
 ///
 /// Note: `f32::max` ignores NaN, so grids passed in must not contain NaN (use
 /// infinity for "unusable").

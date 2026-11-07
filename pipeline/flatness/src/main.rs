@@ -58,12 +58,9 @@ struct Setup {
     /// South-west corners of every tile of every region, each once
     /// (regions may overlap).
     tiles: BTreeSet<(u32, u32)>,
-    /// Where no tent may go, from the map, in any season…
+    /// Where no tent may go, from the map, by class: "always", "water", or
+    /// "summer" (what snow covers: bogs).
     no_go: NoGo,
-    /// …and only in summer: what snow covers (bogs).
-    summer_only: NoGo,
-    /// Lakes, rivers and sea alone, for the water level next to the shore.
-    water: NoGo,
     /// How the no-go areas were made (`prepare_no_go.sh` writes it next to
     /// each GeoPackage), so changing that redoes the tiles.
     no_go_recipe: String,
@@ -181,14 +178,12 @@ fn prepare() -> Result<Setup, String> {
         recipes.insert(recipe.trim().to_string());
         gpkgs.push(gpkg);
     }
-    let no_go = NoGo::load(&gpkgs, |kind| !SUMMER_ONLY_KINDS.contains(&kind))?;
-    let summer_only = NoGo::load(&gpkgs, |kind| SUMMER_ONLY_KINDS.contains(&kind))?;
-    let water = NoGo::load(&gpkgs, |kind| WATER_KINDS.contains(&kind))?;
+    let no_go = NoGo::load(&gpkgs)?;
     println!(
-        "{} no-go polygons, {} more in summer, {} of them water",
-        no_go.polygon_count(),
-        summer_only.polygon_count(),
-        water.polygon_count()
+        "{} no-go polygons: {} of them water, {} only in summer",
+        no_go.count(|_| true),
+        no_go.count(|class| class == WATER),
+        no_go.count(|class| class == SUMMER)
     );
 
     Ok(Setup {
@@ -197,8 +192,6 @@ fn prepare() -> Result<Setup, String> {
         footprints,
         tiles,
         no_go,
-        summer_only,
-        water,
         no_go_recipe: recipes.into_iter().collect::<Vec<_>>().join("+"),
     })
 }
@@ -312,17 +305,15 @@ fn process(job: &Job, setup: &Setup) -> Result<String, String> {
     // wherever something stands on the ground. The mask covers the same
     // pixels as the terrain: tile + border.
     let (west, _, _, north) = bordered_box(job.east, job.north);
-    let mut blocked = setup
-        .no_go
-        .mask(west, north, DTM_SIZE_PX)
-        .map_err(|e| format!("{}: no-go mask: {e}", job.name))?;
+    let mask = |what: &str, keep: &dyn Fn(&str) -> bool| {
+        let mask = setup.no_go.mask(west, north, DTM_SIZE_PX, keep);
+        mask.map_err(|e| format!("{}: {what} mask: {e}", job.name))
+    };
+    let mut blocked = mask("no-go", &|class| class != SUMMER)?;
     mark_obstacles(&mut blocked, &elevation, &surface, setup.args.max_object_height_m);
     // Water the map draws in the wrong place: low ground right by it, and
     // unnaturally smooth ground (interpolated over water).
-    let water = setup
-        .water
-        .mask(west, north, DTM_SIZE_PX)
-        .map_err(|e| format!("{}: water mask: {e}", job.name))?;
+    let water = mask("water", &|class| class == WATER)?;
     let min_height = setup.args.min_height_above_water_m;
     mark_low_shore(&mut blocked, &elevation, &water, WATER_REACH_M, min_height);
     mark_smooth(&mut blocked, &elevation, MAX_SMOOTH_RESIDUAL_M);
@@ -342,10 +333,7 @@ fn process(job: &Job, setup: &Setup) -> Result<String, String> {
         geotiff::write_f32(&out_dir.join(ELEVATION_FILE), n, n, &cell_heights, &at)?;
     }
     // In summer, also what snow covers in winter.
-    let summer_only = setup
-        .summer_only
-        .mask(west, north, DTM_SIZE_PX)
-        .map_err(|e| format!("{}: summer no-go mask: {e}", job.name))?;
+    let summer_only = mask("summer no-go", &|class| class == SUMMER)?;
     let mut summer_blocked = blocked.clone();
     for (b, &s) in summer_blocked.iter_mut().zip(&summer_only) {
         *b |= s;
@@ -466,14 +454,12 @@ fn done_path(out_dir: &Path, tent: &Tent) -> PathBuf {
     out_dir.join(format!("{}.done", tent.slug()))
 }
 
-/// Results come in two seasons. In winter, snow covers what's only a problem
-/// in summer: these no-go kinds (as named in prepare_no_go.sh) are allowed.
+/// Results come in two seasons: in winter, snow covers the no-go polygons
+/// of class "summer" (bogs). Classes are set in prepare_no_go.sh.
 const SUMMER: &str = "summer";
 const WINTER: &str = "winter";
-const SUMMER_ONLY_KINDS: [&str; 1] = ["Myr"];
-
-/// The no-go kinds that are water (as `WATER` in prepare_no_go.sh).
-const WATER_KINDS: [&str; 5] = ["Innsjø", "InnsjøRegulert", "Elv", "FerskvannTørrfall", "Havflate"];
+/// The no-go class of lakes, rivers and sea.
+const WATER: &str = "water";
 /// How far from the water `mark_low_shore` looks for its level, in pixels
 /// (metres): a few times N50's shoreline error.
 const WATER_REACH_M: usize = 30;

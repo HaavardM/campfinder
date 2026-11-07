@@ -3,7 +3,8 @@ import { useEffect, useRef } from "react";
 
 import { MapPanel } from "#/components/map-panel";
 import { type Basemap, isBasemap, showBasemap } from "#/lib/basemaps";
-import { isSeason, type Season, showFlat } from "#/lib/flat-layers";
+import { googleSatelliteUrl, showFlat } from "#/lib/flat-layers";
+import { isSeason, type Season } from "#/lib/seasons";
 import { type MapView, useMaplibre } from "#/lib/use-maplibre";
 import { getTents } from "#/server/tents";
 import { getTileVersion } from "#/server/tile-version";
@@ -59,6 +60,13 @@ function MapPage() {
 	const search = Route.useSearch();
 	const { tents, tileVersion } = Route.useLoaderData();
 	const navigate = useNavigate({ from: "/" });
+	// A control changed: update its value in the URL. `replace` keeps the
+	// browser history from filling up with every change.
+	const setSearch = (change: Partial<MapSearch>) =>
+		navigate({
+			search: (previous) => ({ ...previous, ...change }),
+			replace: true,
+		});
 	const containerRef = useRef<HTMLDivElement>(null);
 	const map = useMaplibre(containerRef, search, search.basemap);
 	const tent = search.tent ?? tents[0]?.slug;
@@ -105,50 +113,23 @@ function MapPage() {
 			<MapPanel
 				tents={tents}
 				tent={tent}
-				onTentChange={(tent) =>
-					navigate({
-						search: (previous) => ({ ...previous, tent }),
-						replace: true,
-					})
-				}
+				onTentChange={(tent) => setSearch({ tent })}
 				season={search.season}
-				onSeasonChange={(season) =>
-					navigate({
-						search: (previous) => ({ ...previous, season }),
-						replace: true,
-					})
-				}
+				onSeasonChange={(season) => setSearch({ season })}
 				maxSlope={search.maxSlope}
-				onMaxSlopeChange={(maxSlope) =>
-					navigate({
-						search: (previous) => ({ ...previous, maxSlope }),
-						replace: true,
-					})
-				}
+				onMaxSlopeChange={(maxSlope) => setSearch({ maxSlope })}
 				minArea={search.minArea}
-				onMinAreaChange={(minArea) =>
-					navigate({
-						search: (previous) => ({ ...previous, minArea }),
-						replace: true,
-					})
-				}
-				// Google's satellite view of the same place, to look at the
-				// ground itself (Kartverket's aerial photos need a licence).
-				photoUrl={`https://www.google.com/maps/@${search.lat},${search.lon},${Math.round(search.zoom)}z/data=!3m1!1e3`}
+				onMinAreaChange={(minArea) => setSearch({ minArea })}
+				photoUrl={googleSatelliteUrl(search.lat, search.lon, search.zoom)}
 				basemap={search.basemap}
-				onBasemapChange={(basemap) =>
-					navigate({
-						search: (previous) => ({ ...previous, basemap }),
-						replace: true,
-					})
-				}
+				onBasemapChange={(basemap) => setSearch({ basemap })}
 				onPlaceSelect={(place) =>
 					map?.flyTo({ center: [place.lon, place.lat], zoom: 14 })
 				}
 				onRegionSelect={(region) =>
 					map?.fitBounds(region.bounds, { padding: 40 })
 				}
-			/>
+			/>{" "}
 		</main>
 	);
 }

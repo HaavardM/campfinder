@@ -28,7 +28,7 @@ What `run.sh` does:
 | `prepare_no_go.sh` | Per region: download the N50 map data of its counties (`N50_COUNTIES`, 0.2–0.7 GB each, once) and collect where no tent may go into `data/no-go/<region>.gpkg`, with GDAL: water and streams (+2 m of shore), bogs, farmland, industry, golf courses and other land in use, roads (+8 m), tracks and trails, and 150 m around houses, cabins and built-up areas | a few seconds per county, once per region |
 | `flatness` (Rust) | Downloads terrain and surface tiles 8 at a time (17 MB each, from Kartverket's WCS) and processes each tile as soon as both are there, on every CPU | downloads: ~8 s per file and connection; processing: ~0.5 s per tile per core |
 | `gdalbuildvrt` | One mosaic per result, for QGIS | seconds |
-| `04_load_cells.sh` | New results into PostGIS, then rebuild the map's bins | ~0.15 s per file, plus the bins |
+| `04_load_cells.sh` | New results into PostGIS in one transaction, then refresh the map's spot counts | under a minute for all regions |
 
 Downloaded tiles are stored compressed without loss, about 7.5 MB instead of
 16.8 (deflate after TIFF's floating-point predictor; see
@@ -61,17 +61,17 @@ data/
   flatness/
     E0220000_N6864000/         results for one tile, 200 × 200 cells of 10 m
       elevation.tif            mean elevation per cell
-      gamme-8-pc.slope.tif     best (lowest) max-slope of a placement in the cell, degrees
-      keron-4-gt.slope.tif
-      keron-4-gt.heading.tif   compass bearing of that placement's long side
-      keron-4-gt.blocks.csv    cells up to 10° in 80 m blocks, for the database
-      keron-4-gt.done          marks the tent done, with the settings used
-    keron-4-gt.slope.vrt       mosaic of all tiles, for QGIS
+      gamme-8-pc.summer.slope.tif   best (lowest) max-slope of a placement in the cell, degrees
+      keron-4-gt.winter.slope.tif   the same in winter (bogs allowed)
+      keron-4-gt.summer.heading.tif compass bearing of that placement's long side
+      keron-4-gt.summer.blocks.csv  cells up to 10° in 80 m squares, for the database
+      keron-4-gt.done               marks the tent done (both seasons), with the settings used
+    keron-4-gt.summer.slope.vrt     mosaic of all tiles, for QGIS
 ```
 
 ## Look at the results
 
-Open `data/flatness/keron-4-gt.slope.vrt` in QGIS, style it with a colour ramp
+Open `data/flatness/keron-4-gt.summer.slope.vrt` in QGIS, style it with a colour ramp
 from 0 (green) to 10 (red) degrees, and put it over a basemap. Check places you
 know before trusting the rest.
 
@@ -167,7 +167,8 @@ cd .. && ./scaling.sh   # same tiles at 1, 2, 4, … threads: where does it stop
   can be off by several metres, and small ponds are missing. Lakes that the
   terrain model flattens to one exact height are caught as well. (The
   detailed FKB maps need a Norge digitalt licence.)
-- **Bog is always excluded**, though frozen bog can be a fine winter spot.
+- **Bog is excluded in summer only**: the winter results treat it as ground
+  under snow.
 - **Buildings by type:** the 150 m rule covers houses, cabins, summer farms
   and mountain huts (types 111–179), not barns, garages or tourist huts.
 - **Angled headings are slightly conservative** (about 1 m) because of how

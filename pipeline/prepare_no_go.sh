@@ -42,28 +42,36 @@ COPIES=(
 # Step 2 turns the copies into no-go polygons, one query per kind. ST_Buffer
 # widens a shape by a distance; the third argument is the points per quarter
 # circle (4 makes a 16-sided circle, close enough; 1 cuts corners square).
+# Each polygon gets a class, all the engine looks at: "water" (no-go, and
+# the level the engine's low-shore rule measures from), "summer" (no-go
+# only without snow) or "always".
 QUERIES=(
   # Water, and its shore.
-  "SELECT objtype AS kind, ST_Buffer(geom, $SHORE_M, 1) AS geom
+  "SELECT objtype AS kind, 'water' AS class, ST_Buffer(geom, $SHORE_M, 1) AS geom
    FROM N50_Arealdekke_omrade WHERE objtype IN ($WATER)"
-  # Bogs, farmland (no camping on cultivated land) and other land in use,
-  # as mapped.
-  "SELECT objtype AS kind, geom FROM N50_Arealdekke_omrade
-   WHERE objtype IN ('Myr', $IN_USE)"
+  # Bogs: under snow, they're fine.
+  "SELECT objtype AS kind, 'summer' AS class, geom FROM N50_Arealdekke_omrade
+   WHERE objtype = 'Myr'"
+  # Farmland (no camping on cultivated land) and other land in use, as
+  # mapped.
+  "SELECT objtype AS kind, 'always' AS class, geom FROM N50_Arealdekke_omrade
+   WHERE objtype IN ($IN_USE)"
   # Built-up areas, and their 150 m.
-  "SELECT objtype AS kind, ST_Buffer(geom, $HOUSE_DISTANCE_M, 4) AS geom
+  "SELECT objtype AS kind, 'always' AS class, ST_Buffer(geom, $HOUSE_DISTANCE_M, 4) AS geom
    FROM N50_Arealdekke_omrade
    WHERE objtype IN ('Tettbebyggelse', 'BymessigBebyggelse')"
   # Streams are lines in N50: the shore either side.
-  "SELECT objtype AS kind, ST_Buffer(geom, $SHORE_M, 1) AS geom FROM N50_Arealdekke_senterlinje"
-  "SELECT 'Bolig' AS kind, ST_Buffer(geom, $HOUSE_DISTANCE_M, 4) AS geom
+  "SELECT objtype AS kind, 'always' AS class, ST_Buffer(geom, $SHORE_M, 1) AS geom
+   FROM N50_Arealdekke_senterlinje"
+  "SELECT 'Bolig' AS kind, 'always' AS class, ST_Buffer(geom, $HOUSE_DISTANCE_M, 4) AS geom
    FROM N50_BygningerOgAnlegg_posisjon"
   # Roads and railways are centre lines: half their width, the verge and
-  # N50's inaccuracy either side. Trails only for the trail itself.
-  "SELECT coalesce(typeveg, objtype) AS kind, ST_Buffer(geom, CASE
-     WHEN objtype = 'Bane' OR typeveg = 'enkelBilveg' THEN 8
+  # N50's inaccuracy either side. Tracks and foot paths are narrower; trails
+  # only for the trail itself.
+  "SELECT coalesce(typeveg, objtype) AS kind, 'always' AS class, ST_Buffer(geom, CASE
      WHEN typeveg = 'sti' THEN 2
-     ELSE 4 END, 1) AS geom
+     WHEN typeveg IN ('traktorveg', 'gangOgSykkelveg') THEN 4
+     ELSE 8 END, 1) AS geom
    FROM N50_Samferdsel_senterlinje"
 )
 recipe=$(printf '%s\n' "${COPIES[@]}" "${QUERIES[@]}" | shasum | cut -c1-12)
