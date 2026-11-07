@@ -25,17 +25,24 @@ pub struct NoGo {
 
 impl NoGo {
     /// Loads the polygons from the given GeoPackages (one per region, made by
-    /// `prepare_no_go.sh`, which already cuts them to the region).
-    pub fn load(gpkgs: &[impl AsRef<Path>]) -> Result<NoGo, String> {
+    /// `prepare_no_go.sh`, which already cuts them to the region), those
+    /// whose `kind` (e.g. "Innsjø", "Myr", "Bolig") passes `keep`.
+    pub fn load(gpkgs: &[impl AsRef<Path>], keep: impl Fn(&str) -> bool) -> Result<NoGo, String> {
         let (mut polygons, mut boxes) = (Vec::new(), Vec::new());
         for gpkg in gpkgs {
             let path = gpkg.as_ref().display().to_string();
             let dataset = terrio::open_vector(&path, &Default::default())
                 .map_err(|e| format!("{path}: {e}"))?;
-            for polygon in dataset.layers.into_iter().flat_map(|l| l.features) {
-                if let Some(b) = polygon.geometry.as_ref().and_then(|g| g.bbox()) {
-                    polygons.push(polygon);
-                    boxes.push(b);
+            for layer in dataset.layers {
+                for polygon in layer.features {
+                    let kind = polygon.get(&layer.schema, "kind").ok().and_then(|v| v.as_str());
+                    if !keep(kind.unwrap_or_default()) {
+                        continue;
+                    }
+                    if let Some(b) = polygon.geometry.as_ref().and_then(|g| g.bbox()) {
+                        polygons.push(polygon);
+                        boxes.push(b);
+                    }
                 }
             }
         }

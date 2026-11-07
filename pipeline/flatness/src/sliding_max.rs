@@ -24,15 +24,22 @@ use crate::grid::Grid;
 /// Note: `f32::max` ignores NaN, so grids passed in must not contain NaN (use
 /// infinity for "unusable").
 pub fn rect_max(grid: &Grid, width: usize, height: usize) -> Grid {
-    let along_rows = rows_max(grid, width);
-    columns_max(&along_rows, height)
+    rect_max_outside(grid, width, height, f32::INFINITY)
 }
 
-fn rows_max(grid: &Grid, window: usize) -> Grid {
+/// Like `rect_max`, but outside the grid counts as `outside`. With minus
+/// infinity, it simply doesn't count.
+pub fn rect_max_outside(grid: &Grid, width: usize, height: usize, outside: f32) -> Grid {
+    let along_rows = rows_max(grid, width, outside);
+    columns_max(&along_rows, height, outside)
+}
+
+fn rows_max(grid: &Grid, window: usize, outside: f32) -> Grid {
     let before = (window - 1) / 2;
     let mut out = Grid::filled(grid.width, grid.height, 0.0);
-    // One row with infinity on both sides, so every shifted copy is in bounds.
-    let mut padded = vec![f32::INFINITY; grid.width + window - 1];
+    // One row padded with `outside` on both sides, so every shifted copy is
+    // in bounds.
+    let mut padded = vec![outside; grid.width + window - 1];
     let rows_in = grid.data.chunks_exact(grid.width);
     let rows_out = out.data.chunks_exact_mut(grid.width);
     for (row_in, row_out) in rows_in.zip(rows_out) {
@@ -45,15 +52,16 @@ fn rows_max(grid: &Grid, window: usize) -> Grid {
     out
 }
 
-fn columns_max(grid: &Grid, window: usize) -> Grid {
+fn columns_max(grid: &Grid, window: usize, outside: f32) -> Grid {
     let before = (window - 1) / 2;
     let mut out = Grid::filled(grid.width, grid.height, f32::NEG_INFINITY);
     for y in 0..grid.height {
         let row_out = &mut out.data[y * grid.width..(y + 1) * grid.width];
         for source_y in (y as isize - before as isize)..(y + window - before) as isize {
             if source_y < 0 || source_y >= grid.height as isize {
-                row_out.fill(f32::INFINITY); // the window reaches off the grid
-                break;
+                // The window reaches off the grid.
+                row_out.iter_mut().for_each(|v| *v = v.max(outside));
+                continue;
             }
             let start = source_y as usize * grid.width;
             max_into(row_out, &grid.data[start..start + grid.width]);

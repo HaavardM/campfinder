@@ -26,7 +26,7 @@ use flatness::geotiff::{self, Georef, write_atomic};
 use flatness::no_go::NoGo;
 use flatness::region::{Region, tile_name};
 use flatness::tents::{Footprint, Shape, Tent, TentsFile};
-use flatness::terrain::{mark_obstacles, pixel_cost};
+use flatness::terrain::{mark_low_shore, mark_obstacles, mark_smooth, pixel_cost};
 use flatness::tile::{
     BUFFER_M, CELL_SIZE_M, CELLS_PER_SIDE, CellResult, DTM_SIZE_PX, TILE_SIZE_M, best_placement,
     bordered_box, cell_elevation, summarise,
@@ -36,7 +36,7 @@ use rayon::iter::{ParallelBridge, ParallelIterator};
 
 const USAGE: &str = "usage: flatness [--tents tents.toml] [--data data] [--threads N] \
                      [--downloads 8] [--max-roughness-m 0.1] [--max-object-height-m 0.5] \
-                     [--force] REGION.env ...";
+                     [--min-height-above-water-m 0.5] [--force] REGION.env ...";
 
 struct Args {
     regions: Vec<PathBuf>,
@@ -46,6 +46,7 @@ struct Args {
     downloads: usize,
     max_roughness_m: f32,
     max_object_height_m: f32,
+    min_height_above_water_m: f32,
     force: bool,
 }
 
@@ -59,6 +60,8 @@ struct Setup {
     tiles: BTreeSet<(u32, u32)>,
     /// Where no tent may go, from the map.
     no_go: NoGo,
+    /// Lakes, rivers and sea alone, for the water level next to the shore.
+    water: NoGo,
     /// How the no-go areas were made (`prepare_no_go.sh` writes it next to
     /// each GeoPackage), so changing that redoes the tiles.
     no_go_recipe: String,
@@ -176,8 +179,13 @@ fn prepare() -> Result<Setup, String> {
         recipes.insert(recipe.trim().to_string());
         gpkgs.push(gpkg);
     }
-    let no_go = NoGo::load(&gpkgs)?;
-    println!("{} no-go polygons", no_go.polygon_count());
+    let no_go = NoGo::load(&gpkgs, |_| true)?;
+    let water = NoGo::load(&gpkgs, |kind| WATER_KINDS.contains(&kind))?;
+    println!(
+        "{} no-go polygons, {} of them water",
+        no_go.polygon_count(),
+        water.polygon_count()
+    );
 
     Ok(Setup {
         args,
@@ -185,6 +193,7 @@ fn prepare() -> Result<Setup, String> {
         footprints,
         tiles,
         no_go,
+        water,
         no_go_recipe: recipes.into_iter().collect::<Vec<_>>().join("+"),
     })
 }
@@ -302,12 +311,16 @@ fn process(job: &Job, setup: &Setup) -> Result<String, String> {
         .no_go
         .mask(west, north, DTM_SIZE_PX)
         .map_err(|e| format!("{}: no-go mask: {e}", job.name))?;
-    mark_obstacles(
-        &mut blocked,
-        &elevation,
-        &surface,
-        setup.args.max_object_height_m,
-    );
+    mark_obstacles(&mut blocked, &elevation, &surface, setup.args.max_object_height_m);
+    // Water the map draws in the wrong place: low ground right by it, and
+    // unnaturally smooth ground (interpolated over water).
+    let water = setup
+        .water
+        .mask(west, north, DTM_SIZE_PX)
+        .map_err(|e| format!("{}: water mask: {e}", job.name))?;
+    let min_height = setup.args.min_height_above_water_m;
+    mark_low_shore(&mut blocked, &elevation, &water, WATER_REACH_M, min_height);
+    mark_smooth(&mut blocked, &elevation, MAX_SMOOTH_RESIDUAL_M);
 
     let out_dir = setup.args.data.join("flatness").join(&job.name);
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
@@ -426,17 +439,28 @@ fn done_path(out_dir: &Path, tent: &Tent) -> PathBuf {
     out_dir.join(format!("{}.done", tent.slug()))
 }
 
+/// The no-go kinds that are water (as `WATER` in prepare_no_go.sh).
+const WATER_KINDS: [&str; 5] = ["Innsjø", "InnsjøRegulert", "Elv", "FerskvannTørrfall", "Havflate"];
+/// How far from the water `mark_low_shore` looks for its level, in pixels
+/// (metres): a few times N50's shoreline error.
+const WATER_REACH_M: usize = 30;
+/// Ground this close to a plane is interpolated water (see `mark_smooth`).
+const MAX_SMOOTH_RESIDUAL_M: f32 = 0.001;
+
 /// The version of what the engine writes. Change it with any change to the
 /// output files or to how results are computed: it makes every tile count as
 /// not done, so they're all redone.
-const OUTPUT_FORMAT: u32 = 2;
+const OUTPUT_FORMAT: u32 = 3;
 
 fn settings_used(footprint: &Footprint, setup: &Setup) -> String {
     let args = &setup.args;
     format!(
-        "{footprint:?} max_roughness_m={} max_object_height_m={} no_go={} \
-         output_format={OUTPUT_FORMAT}\n",
-        args.max_roughness_m, args.max_object_height_m, setup.no_go_recipe
+        "{footprint:?} max_roughness_m={} max_object_height_m={} \
+         min_height_above_water_m={} no_go={} output_format={OUTPUT_FORMAT}\n",
+        args.max_roughness_m,
+        args.max_object_height_m,
+        args.min_height_above_water_m,
+        setup.no_go_recipe
     )
 }
 
@@ -454,6 +478,9 @@ fn parse_args() -> Result<Args, String> {
         // Heather and grass stay below this; bushes, dwarf birch, boulders
         // and trees don't.
         max_object_height_m: 0.5,
+        // Ground lower than this above nearby water is the lake itself (where
+        // the map's shoreline is off) or wet shore.
+        min_height_above_water_m: 0.5,
         force: false,
     };
     let mut words = std::env::args().skip(1);
@@ -479,6 +506,11 @@ fn parse_args() -> Result<Args, String> {
                 args.max_object_height_m = value()?
                     .parse()
                     .map_err(|_| "--max-object-height-m must be a number")?
+            }
+            "--min-height-above-water-m" => {
+                args.min_height_above_water_m = value()?
+                    .parse()
+                    .map_err(|_| "--min-height-above-water-m must be a number")?
             }
             "--force" => args.force = true,
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),

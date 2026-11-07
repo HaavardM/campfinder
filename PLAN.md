@@ -53,7 +53,8 @@ guy lines. Starting with the Gamme 8 PC (round, 4.32 m) and the Keron 4 GT
 
 Each 1 m pixel gets a cost: its slope in degrees, or infinity if a tent
 can't stand there. That covers no-go areas (N50: water, bogs, near houses),
-anything standing on the ground (surface model), missing data, and rough
+anything standing on the ground (surface model), low ground right by water,
+interpolated (unnaturally smooth) ground, missing data, and rough
 ground: more than 0.1 m above or below the average of its 3×3 neighbours,
 like a rock or hummock. Measuring bumps against the neighbourhood average
 keeps them separate from slope; a raw "highest minus lowest under the tent"

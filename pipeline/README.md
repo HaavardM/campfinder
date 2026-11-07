@@ -89,6 +89,10 @@ what's affected.
 - **Bushes and trees:** `--max-object-height-m` (default 0.5). Anything
   standing higher than this on the ground blocks a pixel. Heather and grass
   stay below; dwarf birch, bushes, boulders and trees don't.
+- **By the water:** `--min-height-above-water-m` (default 0.5). Within 30 m
+  of a lake, river or sea, ground less than this above the water is blocked:
+  where N50's shoreline is off it's the lake itself, otherwise wet shore.
+  Lower it to get closer to the water.
 - **No-go areas:** edit the queries in [prepare_no_go.sh](prepare_no_go.sh)
   and rerun; the regions' GeoPackages and tiles are redone.
 
@@ -103,7 +107,10 @@ For each tile, the engine ([flatness/](flatness/), Rust):
    per run, with a bounding box each to find the ones near a tile. Then
    every pixel where the surface model is more than 0.5 m above the terrain
    is blocked too ([terrain.rs](flatness/src/terrain.rs)): something stands
-   there.
+   there. So is water the map draws in the wrong place: ground less than
+   0.5 m above the lowest water within 30 m (a sliding minimum, done with
+   the same code as step 2), and unnaturally smooth ground, where the
+   terrain model was interpolated across water the lidar barely saw.
 1. **Cost per 1 m pixel** ([terrain.rs](flatness/src/terrain.rs)): the slope in
    degrees (Horn's method, as `gdaldem slope`). Infinity where a tent can't
    stand: blocked, missing data, or rough ground.
