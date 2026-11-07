@@ -14,7 +14,7 @@ TRUNCATE bin;
 
 DO $$
 BEGIN
-    FOR z IN REVERSE 11..7 LOOP
+    FOR z IN REVERSE 11..5 LOOP
         INSERT INTO bin (tent, zoom, bx, by, cells_up_to_step)
         SELECT tent, z, bx / 2, by / 2,
                ARRAY[

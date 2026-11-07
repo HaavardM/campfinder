@@ -19,7 +19,7 @@ import { sql } from "#/server/db";
 // only a handful; the square root lifts those into view: 1 spot in 64 →
 // 0.13, 6 → 0.31, a third of the bin → 0.58, all → 1.
 //
-// Bins exist for zooms 7–12 (zoom 12's are the blocks). Tiles at zooms
+// Bins exist for zooms 5–12 (zoom 12's are the blocks). Tiles at zooms
 // 13–16 use the 80 m bins of zoom 12, but each covers a smaller area, so it
 // holds only the points it needs: enlarging one zoom-12 tile instead would
 // make the map blur all of its thousands of points with a huge radius.
@@ -29,7 +29,7 @@ import { sql } from "#/server/db";
 // (Two layers in one tile is just the two encoded layers one after the
 // other, hence the || below.)
 
-const MIN_ZOOM = 7;
+const MIN_ZOOM = 5;
 const MAX_BIN_ZOOM = 12;
 const BLOCK_M = 80; // the blocks: 8 × 8 cells of 10 m, the bins of zoom 12
 const AREAS_FROM_ZOOM = 14;

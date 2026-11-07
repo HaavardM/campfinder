@@ -28,7 +28,7 @@ import {
 //   - This only holds if R/d stays the same at every zoom, see `radius` below.
 
 const SOURCE = "flat";
-const MIN_ZOOM = 7; // tiles exist for zooms 7–16 (see the tile route)
+const MIN_ZOOM = 5; // tiles exist for zooms 5–16 (see the tile route)
 const MAX_BIN_ZOOM = 12; // bins stop shrinking here: 80 m
 const MAX_ZOOM = 16;
 

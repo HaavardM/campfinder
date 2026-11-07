@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS block (
 );
 
 -- The blocks' step counts summed into larger bins for zoomed-out map tiles:
--- 160 m at zoom 11, doubling with each zoom out to 7. (Zoom 12 reads the
+-- 160 m at zoom 11, doubling with each zoom out to 5. (Zoom 12 reads the
 -- 80 m blocks directly.)
 CREATE TABLE IF NOT EXISTS bin (
     tent           text      NOT NULL,
