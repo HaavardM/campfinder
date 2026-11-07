@@ -8,7 +8,8 @@
 //! 2. Downloads the terrain and surface tiles not on disk yet, a few at a
 //!    time, and processes every tile as soon as both are there. Downloading
 //!    is the slow part, so the CPUs keep up with the downloads.
-//! 3. Writes per tile: GeoTIFFs for QGIS and a CSV for the database.
+//! 3. Writes per tile, tent and season: GeoTIFFs of the best slope (and
+//!    heading) per 10 m cell, for QGIS and for build_map.sh.
 //!
 //! Reruns only do what's missing: finished tiles are skipped, downloaded
 //! ones reused.
@@ -156,14 +157,6 @@ fn prepare() -> Result<Setup, String> {
     for dir in [Model::Terrain.dir(), Model::Surface.dir(), "flatness"] {
         std::fs::create_dir_all(args.data.join(dir)).map_err(|e| e.to_string())?;
     }
-    // Tent names for the database, so the app can show "Keron 4 GT" rather
-    // than the file-name slug.
-    let mut tents_csv = String::from("slug,name\n");
-    for tent in &config.tents {
-        tents_csv += &format!("{},\"{}\"\n", tent.slug(), tent.name.replace('"', "\"\""));
-    }
-    write_atomic(&args.data.join("flatness/tents.csv"), tents_csv.as_bytes())?;
-
     let (mut tiles, mut gpkgs, mut recipes) = (BTreeSet::new(), Vec::new(), BTreeSet::new());
     for path in &args.regions {
         tiles.extend(Region::read(path)?.tiles());
@@ -390,9 +383,9 @@ const WATER_REACH_M: usize = 30;
 /// Ground this close to a plane is interpolated water (see `mark_smooth`).
 const MAX_SMOOTH_RESIDUAL_M: f32 = 0.001;
 
-/// The version of what the engine writes. Change it with any change to the
-/// output files or to how results are computed: it makes every tile count as
-/// not done, so they're all redone.
+/// The version of the results. Change it when they're computed differently
+/// or a file the next steps read changes (not when an output is dropped): it
+/// makes every tile count as not done, so they're all redone.
 const OUTPUT_FORMAT: u32 = 4;
 
 fn settings_used(footprint: &Footprint, setup: &Setup) -> String {

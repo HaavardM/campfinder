@@ -3,16 +3,17 @@ import type { Season } from "#/lib/seasons";
 // The map's data is plain files: one PMTiles file per tent and season (all
 // the map tiles in one file, read piece by piece with HTTP range requests),
 // and manifest.json saying which tents and files there are. They're made by
-// pipeline/run.sh and can be served from any static host or bucket.
-export const MAP_URL: string = import.meta.env.VITE_MAP_URL ?? "/map";
+// pipeline/run.sh and can be served from any static host or bucket. Set
+// VITE_MAP_URL when building to read them from elsewhere.
+const MAP_URL = import.meta.env.VITE_MAP_URL ?? "/map";
 
 export type Tent = { slug: string; name: string };
 
 export type Manifest = {
 	tents: Tent[];
-	// "keron-4-gt.summer" → "keron-4-gt.summer.20261107T0930.pmtiles". The
-	// build time in the file name means a new build has new URLs, so the
-	// files themselves can be cached for good.
+	// "keron-4-gt.summer" → "keron-4-gt.summer.3f9a1c0e2b7d.pmtiles". A hash
+	// of the content in the name: a changed file has a new URL, so the files
+	// themselves can be cached for good.
 	files: Record<string, string>;
 };
 

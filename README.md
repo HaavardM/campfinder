@@ -11,40 +11,32 @@ reads them. Nothing runs on a server.
 ```sh
 cd pipeline && ./run.sh regions/test.env   # makes pipeline/data/map/
 cd ../web
-cp .env.example .env
 pnpm install
 pnpm dev                                    # http://localhost:3000
 ```
 
-The dev server serves `pipeline/data/map/` as `/map` (`web/public/map` links
-to it). See [pipeline/README.md](pipeline/README.md) for what the pipeline
-needs and does.
+The dev server serves `pipeline/data/map/` as `/map`. See
+[pipeline/README.md](pipeline/README.md) for what the pipeline needs and does.
 
 ## Put it online
 
-Any static host or bucket works (S3, Google Cloud Storage, …):
+Any static host or bucket works (S3, Google Cloud Storage, …). Build the
+site, then publish site and map files together:
 
 ```sh
-cd web && VITE_MAP_URL=https://<bucket host>/map pnpm build   # → web/dist/client/
+cd web && pnpm build                         # → web/dist/client/
+cd ../pipeline && ./publish.sh gs://<bucket>
 ```
 
-Upload `web/dist/client/` as the site and `pipeline/data/map/` under `map/`,
-for example with Google Cloud Storage:
+[publish.sh](pipeline/publish.sh) uploads in the order caching needs: the
+map files first (their names hold a hash of their content, so they're cached
+for good), then the site, and `manifest.json` last and uncached, so it never
+names a file that isn't there yet. For S3 it's the same with `aws s3 cp`.
 
-```sh
-gcloud storage rsync -r web/dist/client gs://<bucket>
-gcloud storage rsync -r --delete-unmatched-destination-objects pipeline/data/map gs://<bucket>/map
-# The .pmtiles names change with every build: cache them for good.
-gcloud storage objects update 'gs://<bucket>/map/*.pmtiles' \
-  --cache-control='public, max-age=31536000, immutable'
-# manifest.json changes in place: always ask.
-gcloud storage objects update gs://<bucket>/map/manifest.json --cache-control=no-cache
-```
-
-With S3 it's `aws s3 sync` with the same cache headers. If the map files are
-on another host than the site, allow the site's origin in the bucket's CORS
-settings, including the `Range` header: PMTiles is read in pieces with HTTP
-range requests.
+The site reads the map from `/map` on its own host. To keep the map files
+elsewhere, build with `VITE_MAP_URL=https://<host>/map pnpm build` and allow
+the site's origin in that bucket's CORS settings, including the `Range`
+header: PMTiles is read in pieces with HTTP range requests.
 
 ## Layout
 

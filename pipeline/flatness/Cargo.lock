@@ -295,6 +295,7 @@ dependencies = [
  "indicatif",
  "rayon",
  "serde",
+ "serde_json",
  "terrio",
  "tiff",
  "toml",

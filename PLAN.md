@@ -112,12 +112,13 @@ No database: the map's data are files in `pipeline/data/map/`, made by
 [build_map.sh](pipeline/build_map.sh).
 
 ```text
-manifest.json                         tents, and which file is which tent and season
-<tent>.<season>.<build time>.pmtiles  all map tiles, zoom 5–16, two layers:
-  scores   heatmap points, one per square (80 m at zoom 12, doubling outwards):
-           c1, c2, c3 = cells that are spots at up to 1°, 2°, 3°; n = cells
-  areas    from zoom 13: connected spots at each limit, outlines traced:
-           limit (1, 2, 3), m2, x/y (a UTM point inside), best (flattest cell)
+manifest.json                   tents, and which file is which tent and season
+<tent>.<season>.<hash>.pmtiles  all map tiles, zoom 5–16, two layers:
+  scores   zoom 5–15: heatmap points, one per square (80 m at zoom 12,
+           doubling outwards): c1, c2, c3 = cells that are spots at up to
+           1°, 2°, 3°; n = cells
+  areas    zoom 14–16: connected spots at each limit, outlines traced:
+           limit (1, 2, 3), m2, x/y (a UTM point inside)
 ```
 
 PMTiles holds every tile in one file with an index, so the browser reads
@@ -132,10 +133,10 @@ greener where there are more spots for the chosen tent. Zoomed in (from
 zoom 14), it shows the spots themselves, merged into orange areas.
 
 - **Spot:** a 10 m cell where the tent fits within the chosen max slope.
-- **Score per bin:** the square root of the share of its cells that are
-  spots. A tent needs one spot, not a meadow; the square root lifts bins
+- **Score per square:** the square root of the share of its cells that are
+  spots. A tent needs one spot, not a meadow; the square root lifts squares
   with only a few spots into view.
-- **Smooth surface:** one point per bin, drawn as a MapLibre heatmap whose
+- **Smooth surface:** one point per square, drawn as a MapLibre heatmap whose
   blur is normalised to a weighted average of nearby scores, so it
   interpolates rather than piling up (see `web/src/lib/flat-layers.ts`).
 - **Min area:** orange areas smaller than this (default 300 m²) are hidden:

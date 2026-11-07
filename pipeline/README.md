@@ -28,7 +28,7 @@ What `run.sh` does:
 | `prepare_no_go.sh` | Per region: download the N50 map data of its counties (`N50_COUNTIES`, 0.2–0.7 GB each, once) and collect where no tent may go into `data/no-go/<region>.gpkg`, with GDAL: water and streams (+2 m of shore), bogs, farmland, industry, golf courses and other land in use, roads (+8 m), tracks and trails, and 150 m around houses, cabins and built-up areas | a few seconds per county, once per region |
 | `flatness` (Rust) | Downloads terrain and surface tiles 8 at a time (17 MB each, from Kartverket's WCS) and processes each tile as soon as both are there, on every CPU | downloads: ~8 s per file and connection; processing: ~0.5 s per tile per core |
 | `gdalbuildvrt` | One mosaic per result, for QGIS | seconds |
-| `build_map.sh` | The map's files in `data/map/`: `mapfiles` (Rust) turns every tile's 10 m slopes into heatmap points (spot counts per square and zoom) and areas (connected spots at 1°, 2° and 3°, outlines traced), and tippecanoe packs them into one PMTiles file per tent and season, plus `manifest.json` | minutes for all regions |
+| `build_map.sh` | The map's files in `data/map/`: `mapfiles` (Rust) turns every tile's 10 m slopes into heatmap points (spot counts per square and zoom) and areas (connected spots at 1°, 2° and 3°, outlines traced), and tippecanoe packs them into one PMTiles file per tent and season (named by a hash of its content), plus `manifest.json`. Publish with `publish.sh` | minutes for all regions |
 
 Downloaded tiles are stored compressed without loss, about 7.5 MB instead of
 16.8 (deflate after TIFF's floating-point predictor; see
@@ -64,7 +64,6 @@ data/
       gamme-8-pc.summer.slope.tif   best (lowest) max-slope of a placement in the cell, degrees
       keron-4-gt.winter.slope.tif   the same in winter (bogs allowed)
       keron-4-gt.summer.heading.tif compass bearing of that placement's long side
-      keron-4-gt.summer.blocks.csv  cells up to 10° in 80 m squares, for the database
       keron-4-gt.done               marks the tent done (both seasons), with the settings used
     keron-4-gt.summer.slope.vrt     mosaic of all tiles, for QGIS
 ```

@@ -1,13 +1,11 @@
-//! Turns the engine's results into what the map shows, as GeoJSON for
-//! tippecanoe (which packs them into one PMTiles file per tent and season):
+//! Turns the engine's results into what the map shows. build_map.sh runs it
+//! twice, around tippecanoe:
 //!
-//!   mapfiles [--data data] --stamp 20261107T0930 OUT_DIR
+//!   mapfiles [--data data] geojson OUT_DIR
+//!   mapfiles [--tents tents.toml] manifest MAP_DIR
 //!
-//! It also writes `manifest.json` for the web app: the tents (from
-//! data/flatness/tents.csv), and per tent and season the PMTiles file name
-//! (`<tent>.<season>.<stamp>.pmtiles`, which build_map.sh then makes).
-//!
-//! For every tent and season, from every tile's 10 m slope GeoTIFF:
+//! `geojson` writes, per tent and season, from every tile's 10 m slope
+//! GeoTIFF (each tile read once, so overlapping regions don't count twice):
 //!
 //! - `<tent>.<season>.points.geojsonl`: the zoomed-out heatmap. One point
 //!   per square (80 m at zoom 12, doubling with each zoom out to zoom 5),
@@ -16,26 +14,38 @@
 //!   those slope limits, neighbouring spot cells joined into one polygon,
 //!   with its size and a point inside it.
 //!
-//! Each tile is read once, so overlapping regions don't count twice.
+//! tippecanoe packs each pair into `<tent>.<season>.<hash>.pmtiles`.
+//! `manifest` then writes `manifest.json` for the web app: the tents, and
+//! the file for each tent and season found in MAP_DIR.
+//!
 //! GeoJSON wants longitude and latitude (EPSG:4326); everything here is
-//! computed in UTM 33 metres and converted when written.
+//! computed in UTM 33 metres and converted when written. The numbers the
+//! web app relies on (LIMITS, the zooms, the property names) must match
+//! web/src/lib/flat-layers.ts.
 
-use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use flatness::geotiff;
 use flatness::region::parse_tile_name;
+use flatness::tents::TentsFile;
 use flatness::tile::{CELL_SIZE_M, CELLS_PER_SIDE, TILE_SIZE_M};
 use rayon::prelude::*;
+use serde::Serialize;
 use terrio::crs::{SpatialRef, Transformer};
 
-/// The slope limits the map offers, in degrees.
+/// The slope limits the map offers, in degrees (SLOPE_LIMITS in the web app).
 const LIMITS: [u8; 3] = [1, 2, 3];
-/// Zoom levels with their own heatmap squares; 12's are 80 m (8 × 8 cells).
+/// Zoom levels with their own heatmap squares; 12's are 80 m (8 × 8 cells)
+/// and also serve zooms 13–15, after which the heatmap has faded out.
 const MIN_ZOOM: u32 = 5;
 const SQUARE_ZOOM: u32 = 12;
+const POINTS_MAX_ZOOM: u32 = 15;
 const SQUARE_CELLS: i32 = 8;
+/// The areas are drawn from this zoom.
+const AREAS_MIN_ZOOM: u32 = 14;
 
 /// A cell's position on the 10 m grid: x / 10 and y / 10 of its south-west
 /// corner in UTM 33 metres.
@@ -43,173 +53,157 @@ type Cell = (i32, i32);
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let mut data = PathBuf::from("data");
-    let (mut stamp, mut out) = (None, None);
+    let (mut data, mut tents) = (PathBuf::from("data"), PathBuf::from("tents.toml"));
+    let mut words = Vec::new();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--data" => data = PathBuf::from(args.next().expect("--data needs a value")),
-            "--stamp" => stamp = args.next(),
-            _ => out = Some(PathBuf::from(arg)),
+            "--tents" => tents = PathBuf::from(args.next().expect("--tents needs a value")),
+            _ => words.push(arg),
         }
     }
-    let usage = "usage: mapfiles [--data data] --stamp STAMP OUT_DIR";
-    let (stamp, out) = (stamp.expect(usage), out.expect(usage));
-    std::fs::create_dir_all(&out).expect("can't create the output folder");
+    match words.as_slice() {
+        [command, dir] if command == "geojson" => geojson(&data, Path::new(dir)),
+        [command, dir] if command == "manifest" => manifest(&tents, Path::new(dir)),
+        _ => {
+            eprintln!("usage: mapfiles [--data data] geojson OUT_DIR");
+            eprintln!("       mapfiles [--tents tents.toml] manifest MAP_DIR");
+            std::process::exit(2);
+        }
+    }
+}
 
-    // Which tent and season files exist: "keron-4-gt.summer.slope.tif".
-    let mut kinds: Vec<(String, String)> = Vec::new();
-    for dir in tile_dirs(&data) {
-        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+/// A tile's folder and south-west corner.
+type Tile = (PathBuf, u32, u32);
+
+fn geojson(data: &Path, out: &Path) {
+    std::fs::create_dir_all(out).expect("can't create the output folder");
+    let tiles: Vec<Tile> = std::fs::read_dir(data.join("flatness"))
+        .expect("no data/flatness folder")
+        .flatten()
+        .filter_map(|entry| {
+            let (east, north) = parse_tile_name(&entry.file_name().to_string_lossy())?;
+            Some((entry.path(), east, north))
+        })
+        .collect();
+
+    // Which tents and seasons have results: "keron-4-gt.summer.slope.tif".
+    let mut kinds = BTreeSet::new();
+    for (dir, _, _) in &tiles {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if let Some(stem) = name.strip_suffix(".slope.tif")
                 && let Some((tent, season)) = stem.split_once('.')
             {
-                let kind = (tent.to_string(), season.to_string());
-                if !kinds.contains(&kind) {
-                    kinds.push(kind);
-                }
+                kinds.insert((tent.to_string(), season.to_string()));
             }
         }
     }
 
-    kinds.sort();
-    write_manifest(&data, &out, &kinds, &stamp);
-
-    kinds.par_iter().for_each(|(tent, season)| {
+    for (tent, season) in &kinds {
         let started = std::time::Instant::now();
-        let spots = read_spots(&data, tent, season);
-        let to_lon_lat = Transformer::new(
-            &SpatialRef::from_epsg(25833).unwrap(),
-            &SpatialRef::from_epsg(4326).unwrap(),
-        )
-        .unwrap();
+        let spots = read_spots(&tiles, tent, season);
         let file = |what: &str| out.join(format!("{tent}.{season}.{what}.geojsonl"));
-        let points = write_points(&file("points"), &spots, &to_lon_lat);
-        let areas = write_areas(&file("areas"), &spots, &to_lon_lat);
+        // The heatmap and the areas are independent: build both at once.
+        let (points, areas) = rayon::join(
+            || write_points(&file("points"), &spots),
+            || write_areas(&file("areas"), &spots),
+        );
         println!(
             "{tent} {season}: {} spot cells, {points} heatmap points, {areas} areas ({:.1} s)",
             spots.len(),
             started.elapsed().as_secs_f64()
         );
-    });
+    }
 }
 
-/// The web app's manifest.json: tents with their names, and the file for
-/// each tent and season.
-fn write_manifest(data: &Path, out: &Path, kinds: &[(String, String)], stamp: &str) {
-    // tents.csv: `slug,"Name"` lines after a header, written by the engine.
-    let csv = std::fs::read_to_string(data.join("flatness/tents.csv")).expect("no tents.csv");
-    let tents: Vec<String> = csv
-        .lines()
-        .skip(1)
-        .filter_map(|line| line.split_once(','))
-        .map(|(slug, name)| {
-            let name = name.trim_matches('"').replace("\"\"", "\"");
-            format!(r#"{{"slug":{},"name":{}}}"#, json_string(slug), json_string(&name))
-        })
-        .collect();
-    let files: Vec<String> = kinds
-        .iter()
-        .map(|(tent, season)| {
-            let key = format!("{tent}.{season}");
-            format!("{}:{}", json_string(&key), json_string(&format!("{key}.{stamp}.pmtiles")))
-        })
-        .collect();
-    let json = format!(
-        "{{\"tents\":[{}],\"files\":{{{}}}}}\n",
-        tents.join(","),
-        files.join(",")
-    );
-    std::fs::write(out.join("manifest.json"), json).unwrap();
-}
-
-/// A string as JSON: quoted, with quotes and backslashes escaped.
-fn json_string(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-fn tile_dirs(data: &Path) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(data.join("flatness"))
-        .expect("no data/flatness folder")
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_dir() && parse_tile_name(&p.file_name().unwrap().to_string_lossy()).is_some())
-        .collect();
-    dirs.sort();
-    dirs
+/// UTM 33 metres to longitude and latitude.
+fn to_lon_lat() -> Transformer {
+    let utm33 = SpatialRef::from_epsg(25833).unwrap();
+    Transformer::new(&utm33, &SpatialRef::from_epsg(4326).unwrap()).unwrap()
 }
 
 /// Every spot cell up to the largest limit, with its slope in tenths of a
-/// degree (rounded up: never flatter than it is).
-fn read_spots(data: &Path, tent: &str, season: &str) -> HashMap<Cell, u8> {
+/// degree (rounded up: never flatter than it is). Tiles are read in parallel.
+fn read_spots(tiles: &[Tile], tent: &str, season: &str) -> HashMap<Cell, u8> {
     let max_tenths = *LIMITS.last().unwrap() as f32 * 10.0;
-    let mut spots = HashMap::new();
-    for dir in tile_dirs(data) {
-        let path = dir.join(format!("{tent}.{season}.slope.tif"));
-        let Ok(grid) = geotiff::read_f32(&path, CELLS_PER_SIDE) else {
-            continue; // not computed for this tent and season (yet)
-        };
-        let (east, north) = parse_tile_name(&dir.file_name().unwrap().to_string_lossy()).unwrap();
-        let (x0, y_top) = ((east as usize / CELL_SIZE_M) as i32, ((north as usize + TILE_SIZE_M) / CELL_SIZE_M) as i32);
-        for row in 0..CELLS_PER_SIDE {
-            for col in 0..CELLS_PER_SIDE {
-                let tenths = (grid.data[row * CELLS_PER_SIDE + col] * 10.0).ceil();
-                // NaN (nothing fits) fails this comparison too.
-                if tenths <= max_tenths {
-                    // Row 0 is the tile's northern edge.
-                    let cell = (x0 + col as i32, y_top - 1 - row as i32);
-                    spots.insert(cell, tenths.max(0.0) as u8);
-                }
-            }
-        }
-    }
-    spots
+    tiles
+        .par_iter()
+        .flat_map_iter(|(dir, east, north)| {
+            let path = dir.join(format!("{tent}.{season}.slope.tif"));
+            // Not computed for this tent and season (yet): no spots.
+            let grid = geotiff::read_f32(&path, CELLS_PER_SIDE).ok();
+            let x0 = (*east as usize / CELL_SIZE_M) as i32;
+            let y_top = ((*north as usize + TILE_SIZE_M) / CELL_SIZE_M) as i32;
+            grid.into_iter().flat_map(move |grid| {
+                (0..CELLS_PER_SIDE * CELLS_PER_SIDE).filter_map(move |i| {
+                    let tenths = (grid.data[i] * 10.0).ceil();
+                    // NaN (nothing fits) fails this comparison too.
+                    (tenths <= max_tenths).then(|| {
+                        let (row, col) = (i / CELLS_PER_SIDE, i % CELLS_PER_SIDE);
+                        // Row 0 is the tile's northern edge.
+                        ((x0 + col as i32, y_top - 1 - row as i32), tenths.max(0.0) as u8)
+                    })
+                })
+            })
+        })
+        .collect()
 }
 
 /// The heatmap: per square and zoom, how many cells are spots at each limit.
-/// Returns how many points were written.
-fn write_points(path: &Path, spots: &HashMap<Cell, u8>, to_lon_lat: &Transformer) -> usize {
-    let mut geojson = String::new();
-    let mut count = 0;
-    for zoom in MIN_ZOOM..=SQUARE_ZOOM {
-        // A square at this zoom is 8 · 2^(12 − zoom) cells wide; shifting a
-        // cell's number right by that many bits finds its square.
-        let shift = SQUARE_CELLS.trailing_zeros() + (SQUARE_ZOOM - zoom);
-        let mut squares: HashMap<Cell, [u32; LIMITS.len()]> = HashMap::new();
-        for (&(x, y), &tenths) in spots {
-            let counts = squares.entry((x >> shift, y >> shift)).or_default();
-            for (count, limit) in counts.iter_mut().zip(LIMITS) {
-                if tenths <= limit * 10 {
-                    *count += 1;
-                }
+/// Counts zoom 12's 80 m squares from the cells, then each coarser zoom from
+/// the one before (2 × 2 squares make one). Returns how many points.
+fn write_points(path: &Path, spots: &HashMap<Cell, u8>) -> usize {
+    let to_lon_lat = to_lon_lat();
+    let mut out = BufWriter::new(File::create(path).unwrap());
+    let mut squares: HashMap<Cell, [u32; LIMITS.len()]> = HashMap::new();
+    let shift = SQUARE_CELLS.trailing_zeros(); // cell → 80 m square
+    for (&(x, y), &tenths) in spots {
+        let counts = squares.entry((x >> shift, y >> shift)).or_default();
+        for (count, limit) in counts.iter_mut().zip(LIMITS) {
+            if tenths <= limit * 10 {
+                *count += 1;
             }
         }
-        let cells_per_square = 1u64 << (2 * shift);
-        let size_m = (CELL_SIZE_M << shift) as f64;
-        // Zoom 12's squares also serve zooms 13–16 (they stop shrinking).
-        let max_zoom = if zoom == SQUARE_ZOOM { 16 } else { zoom };
-        for ((sx, sy), counts) in squares {
+    }
+    let mut written = 0;
+    for zoom in (MIN_ZOOM..=SQUARE_ZOOM).rev() {
+        let cells_wide = SQUARE_CELLS << (SQUARE_ZOOM - zoom);
+        let size_m = (cells_wide as usize * CELL_SIZE_M) as f64;
+        let max_zoom = if zoom == SQUARE_ZOOM { POINTS_MAX_ZOOM } else { zoom };
+        for (&(sx, sy), counts) in &squares {
             let (lon, lat) = to_lon_lat
                 .transform((sx as f64 + 0.5) * size_m, (sy as f64 + 0.5) * size_m)
                 .unwrap();
-            let [c1, c2, c3] = counts;
+            let [c1, c2, c3] = *counts;
+            let n = cells_wide * cells_wide;
             writeln!(
-                geojson,
-                r#"{{"type":"Feature","tippecanoe":{{"minzoom":{zoom},"maxzoom":{max_zoom}}},"properties":{{"c1":{c1},"c2":{c2},"c3":{c3},"n":{cells_per_square}}},"geometry":{{"type":"Point","coordinates":[{lon:.6},{lat:.6}]}}}}"#
+                out,
+                r#"{{"type":"Feature","tippecanoe":{{"minzoom":{zoom},"maxzoom":{max_zoom}}},"properties":{{"c1":{c1},"c2":{c2},"c3":{c3},"n":{n}}},"geometry":{{"type":"Point","coordinates":[{lon:.6},{lat:.6}]}}}}"#
             )
             .unwrap();
-            count += 1;
+            written += 1;
         }
+        // One zoom out: halving a square's number finds its parent.
+        let mut coarser: HashMap<Cell, [u32; LIMITS.len()]> = HashMap::new();
+        for ((sx, sy), counts) in squares {
+            let parent = coarser.entry((sx >> 1, sy >> 1)).or_default();
+            for (sum, count) in parent.iter_mut().zip(counts) {
+                *sum += count;
+            }
+        }
+        squares = coarser;
     }
-    std::fs::write(path, geojson).unwrap();
-    count
+    out.flush().unwrap();
+    written
 }
 
 /// The areas: for each limit, neighbouring spot cells (sharing an edge)
 /// joined into polygons. Returns how many were written.
-fn write_areas(path: &Path, spots: &HashMap<Cell, u8>, to_lon_lat: &Transformer) -> usize {
-    let mut geojson = String::new();
-    let mut count = 0;
+fn write_areas(path: &Path, spots: &HashMap<Cell, u8>) -> usize {
+    let to_lon_lat = to_lon_lat();
+    let mut out = BufWriter::new(File::create(path).unwrap());
+    let mut written = 0;
     for limit in LIMITS {
         let cells: HashSet<Cell> = spots
             .iter()
@@ -224,32 +218,32 @@ fn write_areas(path: &Path, spots: &HashMap<Cell, u8>, to_lon_lat: &Transformer)
                 continue;
             }
             let area = connected(start, &cells, &mut seen);
-            let flattest = area.iter().map(|c| spots[c]).min().unwrap();
-            let rings = outline(&area);
-            let polygons = polygons_with_holes(rings);
             // A point inside the area for the photo link: the middle of one
             // of its cells.
-            let (x, y) = ((start.0 * 10 + 5), (start.1 * 10 + 5));
-            let coordinates: Vec<String> = polygons
-                .iter()
-                .map(|rings| {
-                    let rings: Vec<String> = rings.iter().map(|ring| lon_lat_ring(ring, to_lon_lat)).collect();
-                    format!("[{}]", rings.join(","))
-                })
-                .collect();
-            writeln!(
-                geojson,
-                r#"{{"type":"Feature","tippecanoe":{{"minzoom":13}},"properties":{{"limit":{limit},"m2":{},"x":{x},"y":{y},"best":{:.1}}},"geometry":{{"type":"MultiPolygon","coordinates":[{}]}}}}"#,
+            let half = CELL_SIZE_M as i32 / 2;
+            let (x, y) = (start.0 * CELL_SIZE_M as i32 + half, start.1 * CELL_SIZE_M as i32 + half);
+            write!(
+                out,
+                r#"{{"type":"Feature","tippecanoe":{{"minzoom":{AREAS_MIN_ZOOM}}},"properties":{{"limit":{limit},"m2":{},"x":{x},"y":{y}}},"geometry":{{"type":"MultiPolygon","coordinates":["#,
                 area.len() * CELL_SIZE_M * CELL_SIZE_M,
-                flattest as f32 / 10.0,
-                coordinates.join(",")
             )
             .unwrap();
-            count += 1;
+            for (p, polygon) in polygons_with_holes(outline(&area, &cells)).iter().enumerate() {
+                out.write_all(if p == 0 { b"[" } else { b",[" }).unwrap();
+                for (r, ring) in polygon.iter().enumerate() {
+                    if r > 0 {
+                        out.write_all(b",").unwrap();
+                    }
+                    write_ring(&mut out, ring, &to_lon_lat);
+                }
+                out.write_all(b"]").unwrap();
+            }
+            out.write_all(b"]}}\n").unwrap();
+            written += 1;
         }
     }
-    std::fs::write(path, geojson).unwrap();
-    count
+    out.flush().unwrap();
+    written
 }
 
 /// All cells reachable from `start` through cells that share an edge (a
@@ -268,28 +262,28 @@ fn connected(start: Cell, cells: &HashSet<Cell>, seen: &mut HashSet<Cell>) -> Ve
     area
 }
 
-/// The outline of a set of cells as closed rings of grid corners (in cell
-/// units). Every cell side that borders a cell outside the set is a piece of
-/// outline, walked counter-clockwise around its cell; joining the pieces end
-/// to start gives the rings: counter-clockwise around the outside, clockwise
-/// around holes.
-fn outline(area: &[Cell]) -> Vec<Vec<Cell>> {
-    let inside: HashSet<Cell> = area.iter().copied().collect();
-    // Edges by their start corner. A corner where the set touches itself
+/// The outline of one connected area as closed rings of grid corners (in
+/// cell units). Every cell side that borders a cell outside the area is a
+/// piece of outline, walked counter-clockwise around its cell; joining the
+/// pieces end to start gives the rings: counter-clockwise around the outside,
+/// clockwise around holes. `cells` are all the cells at this limit: a
+/// neighbour among them is always in the same area.
+fn outline(area: &[Cell], cells: &HashSet<Cell>) -> Vec<Vec<Cell>> {
+    // Edges by their start corner. A corner where the area touches itself
     // diagonally starts two edges, hence the Vec.
     let mut edges: HashMap<Cell, Vec<Cell>> = HashMap::new();
     let mut add = |from: Cell, to: Cell| edges.entry(from).or_default().push(to);
     for &(x, y) in area {
-        if !inside.contains(&(x, y - 1)) {
+        if !cells.contains(&(x, y - 1)) {
             add((x, y), (x + 1, y)); // south side, walking east
         }
-        if !inside.contains(&(x + 1, y)) {
+        if !cells.contains(&(x + 1, y)) {
             add((x + 1, y), (x + 1, y + 1)); // east side, walking north
         }
-        if !inside.contains(&(x, y + 1)) {
+        if !cells.contains(&(x, y + 1)) {
             add((x + 1, y + 1), (x, y + 1)); // north side, walking west
         }
-        if !inside.contains(&(x - 1, y)) {
+        if !cells.contains(&(x - 1, y)) {
             add((x, y + 1), (x, y)); // west side, walking south
         }
     }
@@ -341,7 +335,7 @@ fn split_at_repeats(ring: Vec<Cell>) -> Vec<Vec<Cell>> {
     loops
 }
 
-/// Takes the next outline edge from `at`. Where two edges start (the set
+/// Takes the next outline edge from `at`. Where two edges start (the area
 /// touches itself diagonally), turning left keeps each ring from crossing
 /// itself.
 fn take_edge(edges: &mut HashMap<Cell, Vec<Cell>>, at: Cell, heading: Option<Cell>) -> Cell {
@@ -418,26 +412,64 @@ fn contains(ring: &[Cell], (px, py): (f64, f64)) -> bool {
     inside
 }
 
-/// A ring of grid corners as GeoJSON longitude/latitude, closed (first point
-/// repeated at the end).
-fn lon_lat_ring(ring: &[Cell], to_lon_lat: &Transformer) -> String {
-    let mut points: Vec<String> = ring
+/// Writes a ring of grid corners as GeoJSON longitude/latitude, closed
+/// (first point repeated at the end).
+fn write_ring(out: &mut impl Write, ring: &[Cell], to_lon_lat: &Transformer) {
+    out.write_all(b"[").unwrap();
+    for (i, &(x, y)) in ring.iter().chain(std::iter::once(&ring[0])).enumerate() {
+        let (lon, lat) = to_lon_lat
+            .transform((x as usize * CELL_SIZE_M) as f64, (y as usize * CELL_SIZE_M) as f64)
+            .unwrap();
+        let comma = if i > 0 { "," } else { "" };
+        write!(out, "{comma}[{lon:.7},{lat:.7}]").unwrap();
+    }
+    out.write_all(b"]").unwrap();
+}
+
+/// The web app's manifest.json.
+#[derive(Serialize)]
+struct Manifest {
+    tents: Vec<TentEntry>,
+    /// "keron-4-gt.summer" → "keron-4-gt.summer.3f9a1c0e.pmtiles".
+    files: BTreeMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct TentEntry {
+    slug: String,
+    name: String,
+}
+
+/// Writes MAP_DIR/manifest.json from the tents in tents.toml and the
+/// `<tent>.<season>.<hash>.pmtiles` files in MAP_DIR.
+fn manifest(tents_toml: &Path, map_dir: &Path) {
+    let text = std::fs::read_to_string(tents_toml).expect("can't read the tents file");
+    let config: TentsFile = toml::from_str(&text).expect("can't parse the tents file");
+    let tents = config
+        .tents
         .iter()
-        .chain(std::iter::once(&ring[0]))
-        .map(|&(x, y)| {
-            let (lon, lat) = to_lon_lat
-                .transform((x as usize * CELL_SIZE_M) as f64, (y as usize * CELL_SIZE_M) as f64)
-                .unwrap();
-            format!("[{lon:.7},{lat:.7}]")
-        })
+        .map(|t| TentEntry { slug: t.slug(), name: t.name.clone() })
         .collect();
-    points.dedup();
-    format!("[{}]", points.join(","))
+    let mut files = BTreeMap::new();
+    for entry in std::fs::read_dir(map_dir).expect("no map folder").flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        // keron-4-gt.summer.3f9a1c0e.pmtiles → key keron-4-gt.summer
+        let Some(stem) = name.strip_suffix(".pmtiles") else { continue };
+        if let Some((key, _hash)) = stem.rsplit_once('.') {
+            files.insert(key.to_string(), name);
+        }
+    }
+    let json = serde_json::to_string(&Manifest { tents, files }).unwrap();
+    std::fs::write(map_dir.join("manifest.json"), json + "\n").unwrap();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn traced(area: &[Cell]) -> Vec<Vec<Cell>> {
+        outline(area, &area.iter().copied().collect())
+    }
 
     #[test]
     fn a_square_with_a_hole() {
@@ -447,7 +479,7 @@ mod tests {
             .flat_map(|x| (0..3).map(move |y| (x, y)))
             .filter(|&c| c != (1, 1))
             .collect();
-        let polygons = polygons_with_holes(outline(&area));
+        let polygons = polygons_with_holes(traced(&area));
         assert_eq!(polygons.len(), 1);
         assert_eq!(polygons[0].len(), 2, "outer ring and hole");
         assert_eq!(signed_area(&polygons[0][0]), 2 * 9);
@@ -474,8 +506,7 @@ mod tests {
     fn a_pinched_area_traces_without_crossing() {
         // An L of three cells whose ends touch diagonally around (1, 1).
         let area = vec![(0, 0), (1, 0), (1, 1), (0, 2), (0, 1)];
-        let rings = outline(&area);
-        let total: i64 = rings.iter().map(|r| signed_area(r)).sum();
+        let total: i64 = traced(&area).iter().map(|r| signed_area(r)).sum();
         assert_eq!(total, 2 * area.len() as i64, "rings add up to the area");
     }
 }
