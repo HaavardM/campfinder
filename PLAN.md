@@ -121,7 +121,7 @@ database spends its space on data rather than on Postgres's ~30 bytes of
 per-row overhead: 9 GB as a row per cell became about 0.5 GB, 19× less.
 Heading and elevation stay in the GeoTIFFs for QGIS.
 
-`bin` is rebuilt after each load ([db/bins.sql](db/bins.sql)): 160 m bins
+`bin` is a materialized view, refreshed after each load: 160 m bins
 at zoom 11 from the blocks, each zoom out merging 2 × 2. Zoomed-out tiles
 read only the step counts, so a tile costs the same however much data
 there is.

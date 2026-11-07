@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Loads the engine's per-tile CSVs into PostGIS (table `block`, see
-# ../db/schema.sql), then rebuilds the bins the map reads (../db/bins.sql).
+# ../db/schema.sql), then refreshes the bins the map reads (view `bin`).
 #
 # Files already loaded with the same modification time (recorded in table
 # `block_load`) are skipped, so a rerun only loads what changed. Each file
@@ -60,9 +60,10 @@ if ((${#pending[@]} > 0)); then
     echo "COMMIT;"
     printf '\\echo [%d/%d] loaded %s %s\n' "$count" "${#pending[@]}" "$tile" "$tent" # psql prints this
   done | psql_run
-  echo "Loaded in $(($(date +%s) - start)) s. Rebuilding bins..."
-  psql_run -c "ANALYZE block" # fresh statistics for the map's queries
-  psql_run < ../db/bins.sql
+  echo "Loaded in $(($(date +%s) - start)) s. Refreshing bins..."
+  # The map keeps reading the old bins until the new ones are ready.
+  psql_run -c "REFRESH MATERIALIZED VIEW CONCURRENTLY bin"
+  psql_run -c "ANALYZE block, bin" # fresh statistics for the map's queries
 fi
 
 $PSQL -c "SELECT tent, count(*) AS blocks FROM block GROUP BY tent ORDER BY tent" \

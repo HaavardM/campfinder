@@ -27,16 +27,39 @@ CREATE TABLE IF NOT EXISTS block (
 );
 
 -- The blocks' step counts summed into larger bins for zoomed-out map tiles:
--- 160 m at zoom 11, doubling with each zoom out to 5. (Zoom 12 reads the
--- 80 m blocks directly.)
-CREATE TABLE IF NOT EXISTS bin (
-    tent           text      NOT NULL,
-    zoom           smallint  NOT NULL,
-    bx             integer   NOT NULL, -- bin column: x / bin size
-    by             integer   NOT NULL, -- bin row: y / bin size
-    cells_up_to_step integer[] NOT NULL, -- as in block
-    PRIMARY KEY (tent, zoom, bx, by)
-);
+-- 160 m at zoom 11, doubling with each zoom out to 10 km at zoom 5. (Zoom 12
+-- reads the 80 m blocks directly.)
+--
+-- A materialized view: a query whose result Postgres stores like a table.
+-- The loader recomputes it after each load with REFRESH MATERIALIZED VIEW
+-- CONCURRENTLY, which builds the new result on the side, so the map keeps
+-- reading the old bins meanwhile (~15 s).
+--
+-- Every block counts at every zoom. A bin at zoom z is 2^(12 − z) blocks
+-- wide, and shifting the block number right by 12 − z bits divides it by
+-- that (rounding down). The 20 counts are summed position by position.
+DO $$ BEGIN
+    -- One-off: bin used to be a table filled by a script.
+    IF EXISTS (SELECT FROM pg_class WHERE relname = 'bin' AND relkind = 'r') THEN
+        DROP TABLE bin;
+    END IF;
+END $$;
+CREATE MATERIALIZED VIEW IF NOT EXISTS bin AS
+SELECT b.tent,
+       z::smallint AS zoom,
+       b.bx >> (12 - z) AS bx, -- bin column: x / bin size
+       b.by >> (12 - z) AS by, -- bin row: y / bin size
+       ARRAY[
+           sum(b.cells_up_to_step[1]), sum(b.cells_up_to_step[2]), sum(b.cells_up_to_step[3]), sum(b.cells_up_to_step[4]),
+           sum(b.cells_up_to_step[5]), sum(b.cells_up_to_step[6]), sum(b.cells_up_to_step[7]), sum(b.cells_up_to_step[8]),
+           sum(b.cells_up_to_step[9]), sum(b.cells_up_to_step[10]), sum(b.cells_up_to_step[11]), sum(b.cells_up_to_step[12]),
+           sum(b.cells_up_to_step[13]), sum(b.cells_up_to_step[14]), sum(b.cells_up_to_step[15]), sum(b.cells_up_to_step[16]),
+           sum(b.cells_up_to_step[17]), sum(b.cells_up_to_step[18]), sum(b.cells_up_to_step[19]), sum(b.cells_up_to_step[20])
+       ]::integer[] AS cells_up_to_step -- as in block
+FROM block b, generate_series(5, 11) AS z
+GROUP BY b.tent, z, 3, 4;
+-- The map's lookups, and REFRESH ... CONCURRENTLY needs a unique index.
+CREATE UNIQUE INDEX IF NOT EXISTS bin_key ON bin (tent, zoom, bx, by);
 
 -- Which tile CSVs are loaded, so reloading skips what hasn't changed. Kept
 -- in the database itself, so a fresh database simply loads everything.

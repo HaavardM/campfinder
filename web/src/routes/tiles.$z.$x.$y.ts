@@ -9,8 +9,8 @@ import { sql } from "#/server/db";
 //
 // A vector tile (Mapbox Vector Tile format) of points, one per bin, scored
 // by how many spots for the tent it has. Built by PostGIS from the cells
-// pre-counted per slope step in tables `block` (80 m) and `bin` (larger;
-// see db/schema.sql and db/bins.sql); the map interpolates between the
+// pre-counted per slope step in table `block` (80 m) and view `bin` (larger;
+// see db/schema.sql); the map interpolates between the
 // points (see lib/flat-layers.ts).
 //
 // A spot is a 10 m cell where the tent fits within maxSlope. The score is
