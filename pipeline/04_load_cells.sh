@@ -3,8 +3,8 @@
 # ../db/schema.sql), then refreshes the bins the map reads (view `bin`).
 #
 # Files already loaded with the same modification time (recorded in table
-# `block_load`) are skipped, so a rerun only loads what changed. Each file
-# replaces its tile in its own transaction.
+# `block_load`) are skipped, so a rerun only loads what changed. Everything
+# new loads in one transaction.
 #
 # Usage: ./04_load_cells.sh
 #   PSQL="psql postgres://..."   how to reach the database (default: the
@@ -26,40 +26,49 @@ psql_run -1 \
   -c "DELETE FROM block WHERE tent NOT IN (SELECT slug FROM tent)" \
   < data/flatness/tents.csv
 
-# What's already loaded, as "tile tent mtime" lines.
-loaded=$($PSQL -At -F ' ' -c "SELECT tile, tent, csv_mtime FROM block_load")
-pending=()
-for csv in data/flatness/E*/*.blocks.csv; do
-  tile=$(basename "$(dirname "$csv")")
-  tent=$(basename "$csv" .blocks.csv)
-  grep -qxF "$tile $tent $(date -r "$csv" +%s)" <<< "$loaded" || pending+=("$csv")
-done
-echo "${#pending[@]} tile files to load"
+# Every tile file with its modification time, as "tile<TAB>tent<TAB>mtime"
+# lines, from one perl process (a `date` per file took minutes for
+# thousands of files).
+files=$(perl -e 'for (@ARGV) {
+  my ($tile, $tent) = m{([^/]+)/([^/]+)\.blocks\.csv$};
+  printf "%s\t%s\t%d\n", $tile, $tent, (stat)[9];
+}' data/flatness/E*/*.blocks.csv)
+# Those not loaded with that modification time yet: grep keeps (-v) the
+# lines that aren't (-x whole-line, -F plain text) among the loaded ones (-f).
+loaded=$($PSQL -At -F $'\t' -c "SELECT tile, tent, csv_mtime FROM block_load")
+pending=$(grep -vxFf <(echo "$loaded") <<< "$files" || true)
+count=$(grep -c . <<< "$pending" || true)
+echo "$count tile files to load"
 
-if ((${#pending[@]} > 0)); then
+if ((count > 0)); then
   start=$(date +%s)
-  # One SQL stream for all files, into a single psql session (starting one
-  # per file through Docker costs ~0.3 s each). COPY ... FROM STDIN takes the
-  # CSV lines that follow it, up to the "\." line.
-  count=0
-  for csv in "${pending[@]}"; do
-    count=$((count + 1))
-    tile=$(basename "$(dirname "$csv")")
-    tent=$(basename "$csv" .blocks.csv)
-    east=$((10#${tile:1:7})) # "E0220000_N6864000" → 220000
-    north=$((10#${tile:10:7}))
+  # One SQL stream, one transaction: either everything loads or nothing
+  # changes. COPY ... FROM STDIN takes the lines that follow it, up to "\.".
+  {
     echo "BEGIN;"
-    echo "DELETE FROM block WHERE tent = '$tent'"
-    echo "  AND bx >= $((east / BLOCK_M)) AND bx < $(((east + TILE_M) / BLOCK_M))"
-    echo "  AND by >= $((north / BLOCK_M)) AND by < $(((north + TILE_M) / BLOCK_M));"
-    echo "COPY block (tent, bx, by, slopes, cells_up_to_step) FROM STDIN WITH (FORMAT csv, HEADER);"
-    cat "$csv"
+    echo "CREATE TEMP TABLE pending (tile text, tent text, csv_mtime bigint);"
+    echo "COPY pending FROM STDIN;"
+    echo "$pending"
     echo '\.'
-    echo "INSERT INTO block_load VALUES ('$tile', '$tent', $(date -r "$csv" +%s))"
-    echo "  ON CONFLICT (tile, tent) DO UPDATE SET csv_mtime = excluded.csv_mtime;"
+    # Each pending file replaces its tile's blocks for its tent. The tile's
+    # south-west corner is in its name: "E0220000_N6864000".
+    echo "DELETE FROM block b USING pending p
+      WHERE b.tent = p.tent
+        AND b.bx >= substr(p.tile, 2, 7)::int / $BLOCK_M
+        AND b.bx < (substr(p.tile, 2, 7)::int + $TILE_M) / $BLOCK_M
+        AND b.by >= substr(p.tile, 11, 7)::int / $BLOCK_M
+        AND b.by < (substr(p.tile, 11, 7)::int + $TILE_M) / $BLOCK_M;"
+    echo "COPY block (tent, bx, by, slopes, cells_up_to_step) FROM STDIN WITH (FORMAT csv);"
+    # All the files' rows, without their header lines (FNR is the line
+    # number within each file). xargs hands awk hundreds of files at a time
+    # (the paths have no spaces).
+    awk -F '\t' '{ print "data/flatness/" $1 "/" $2 ".blocks.csv" }' <<< "$pending" |
+      xargs awk 'FNR > 1'
+    echo '\.'
+    echo "INSERT INTO block_load SELECT * FROM pending
+      ON CONFLICT (tile, tent) DO UPDATE SET csv_mtime = excluded.csv_mtime;"
     echo "COMMIT;"
-    printf '\\echo [%d/%d] loaded %s %s\n' "$count" "${#pending[@]}" "$tile" "$tent" # psql prints this
-  done | psql_run
+  } | psql_run
   echo "Loaded in $(($(date +%s) - start)) s. Refreshing bins..."
   # The map keeps reading the old bins until the new ones are ready.
   psql_run -c "REFRESH MATERIALIZED VIEW CONCURRENTLY bin"
