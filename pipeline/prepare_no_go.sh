@@ -21,18 +21,23 @@ HOUSE_DISTANCE_M=150
 # waterline. Small on purpose: camping by the water is half the point.
 SHORE_M=2
 WATER="'Innsjø', 'InnsjøRegulert', 'Elv', 'FerskvannTørrfall', 'Havflate'"
+# Land in use, as flat as it gets and no place for a tent.
+IN_USE="'DyrketMark', 'Industriområde', 'Golfbane', 'SportIdrettPlass', 'Alpinbakke',
+  'Gravplass', 'Park', 'Lufthavn', 'Rullebane', 'Steinbrudd', 'Steintipp'"
 
 # Step 1 copies these from each county's N50 into a small GeoPackage, cut to
 # the region: N50 layer, then which objects (an attribute filter). The
 # geodatabase driver applies both filters itself, which is fast.
 COPIES=(
-  "N50_Arealdekke_omrade" "objtype IN ($WATER, 'Myr', 'DyrketMark',
+  "N50_Arealdekke_omrade" "objtype IN ($WATER, 'Myr', $IN_USE,
     'Tettbebyggelse', 'BymessigBebyggelse')"
   "N50_Arealdekke_senterlinje" "objtype = 'ElvBekk'"
   # Inhabited buildings, by the building register's type: 111–179 are
   # houses, cabins, summer farms and mountain huts (not barns, garages or
   # tourist huts, which usually have camping right next to them).
   "N50_BygningerOgAnlegg_posisjon" "objtype = 'Bygning' AND bygningstype BETWEEN 111 AND 179"
+  # Roads, tracks, trails and railways, except in tunnels (medium U).
+  "N50_Samferdsel_senterlinje" "objtype IN ('Veglenke', 'Bane') AND (medium IS NULL OR medium <> 'U')"
 )
 # Step 2 turns the copies into no-go polygons, one query per kind. ST_Buffer
 # widens a shape by a distance; the third argument is the points per quarter
@@ -41,9 +46,10 @@ QUERIES=(
   # Water, and its shore.
   "SELECT objtype AS kind, ST_Buffer(geom, $SHORE_M, 1) AS geom
    FROM N50_Arealdekke_omrade WHERE objtype IN ($WATER)"
-  # Bogs and farmland (no camping on cultivated land) as mapped.
+  # Bogs, farmland (no camping on cultivated land) and other land in use,
+  # as mapped.
   "SELECT objtype AS kind, geom FROM N50_Arealdekke_omrade
-   WHERE objtype IN ('Myr', 'DyrketMark')"
+   WHERE objtype IN ('Myr', $IN_USE)"
   # Built-up areas, and their 150 m.
   "SELECT objtype AS kind, ST_Buffer(geom, $HOUSE_DISTANCE_M, 4) AS geom
    FROM N50_Arealdekke_omrade
@@ -52,6 +58,13 @@ QUERIES=(
   "SELECT objtype AS kind, ST_Buffer(geom, $SHORE_M, 1) AS geom FROM N50_Arealdekke_senterlinje"
   "SELECT 'Bolig' AS kind, ST_Buffer(geom, $HOUSE_DISTANCE_M, 4) AS geom
    FROM N50_BygningerOgAnlegg_posisjon"
+  # Roads and railways are centre lines: half their width, the verge and
+  # N50's inaccuracy either side. Trails only for the trail itself.
+  "SELECT coalesce(typeveg, objtype) AS kind, ST_Buffer(geom, CASE
+     WHEN objtype = 'Bane' OR typeveg = 'enkelBilveg' THEN 8
+     WHEN typeveg = 'sti' THEN 2
+     ELSE 4 END, 1) AS geom
+   FROM N50_Samferdsel_senterlinje"
 )
 recipe=$(printf '%s\n' "${COPIES[@]}" "${QUERIES[@]}" | shasum | cut -c1-12)
 
