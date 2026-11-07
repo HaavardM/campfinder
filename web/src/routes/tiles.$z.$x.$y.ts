@@ -10,7 +10,7 @@ import { sql } from "#/server/db";
 //
 // A vector tile (Mapbox Vector Tile format) of points, one per bin, scored
 // by how many spots for the tent it has. Built by PostGIS from the cells
-// pre-counted per slope step in table `block` (80 m) and view `bin` (larger;
+// pre-counted per slope step in table `spots_80m` and view `spot_counts` (larger;
 // see db/schema.sql); the map interpolates between the
 // points (see lib/flat-layers.ts).
 //
@@ -101,11 +101,11 @@ function tile(
 	const binZoom = Math.min(z, MAX_BIN_ZOOM);
 	const binM = BLOCK_M * 2 ** (MAX_BIN_ZOOM - binZoom);
 	const cellsPerBin = (binM / 10) ** 2;
-	// Each bin's slope step counts: the blocks themselves at zoom 12.
+	// Each bin's slope step counts: the 80 m squares themselves at zoom 12.
 	const bins =
 		binZoom === MAX_BIN_ZOOM
-			? sql`SELECT bx, by, cells_up_to_step FROM block WHERE tent = ${tent} AND season = ${season}`
-			: sql`SELECT bx, by, cells_up_to_step FROM bin
+			? sql`SELECT bx, by, cells_up_to_step FROM spots_80m WHERE tent = ${tent} AND season = ${season}`
+			: sql`SELECT bx, by, cells_up_to_step FROM spot_counts
 			      WHERE tent = ${tent} AND season = ${season} AND zoom = ${binZoom}`;
 	return sql`
 		WITH tile AS (
@@ -142,15 +142,15 @@ function tile(
 			WHERE score > 0
 		),
 		spots AS (
-			-- The spots, unpacked from their blocks: byte i of a block is the
-			-- cell in column i % 8 and row i / 8, counting from the block's
+			-- The spots, unpacked from their 80 m squares: byte i of a square is
+			-- the cell in column i % 8 and row i / 8, counting from the square's
 			-- south-west corner, in tenths of a degree (255: no spot). Only from
-			-- zoom 14: a tile is then about 1 km across. The margin of a block
+			-- zoom 14: a tile is then about 1 km across. The margin of a square
 			-- lets areas continue into the tile's buffer, so their outlines
 			-- don't stop at its edges.
 			SELECT b.bx * ${BLOCK_M} + i % 8 * 10 AS x,
 			       b.by * ${BLOCK_M} + i / 8 * 10 AS y
-			FROM block b, tile, generate_series(0, 63) AS i
+			FROM spots_80m b, tile, generate_series(0, 63) AS i
 			WHERE tile.z >= ${AREAS_FROM_ZOOM}
 			  AND b.tent = ${tent} AND b.season = ${season}
 			  AND ${nearTile(BLOCK_M)}

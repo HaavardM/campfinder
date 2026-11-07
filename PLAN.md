@@ -111,18 +111,19 @@ See [db/schema.sql](db/schema.sql).
 
 ```sql
 tent  (slug, name)
-block (tent, bx, by, slopes, cells_up_to_step) -- 80 m blocks of 8 × 8 cells ≤ 10°
-bin   (tent, zoom, bx, by, cells_up_to_step)   -- blocks summed into larger bins
+spots_80m   (tent, season, bx, by, slopes, cells_up_to_step) -- 8 × 8 cells ≤ 10° per 80 m square
+spot_counts (tent, season, zoom, bx, by, cells_up_to_step)   -- view: summed into larger squares
+loaded_files (tile, tent, season, csv_mtime)                 -- what the loader has done
 ```
 
-Sized to what the map reads. A block row holds its 64 cells' slopes as one
+Sized to what the map reads. A `spots_80m` row holds its 64 cells' slopes as one
 byte each (tenths of a degree) and how many cells are up to 0.5°, 1°, …, so the
 database spends its space on data rather than on Postgres's ~30 bytes of
 per-row overhead: 9 GB as a row per cell became about 0.5 GB, 19× less.
 Heading and elevation stay in the GeoTIFFs for QGIS.
 
-`bin` is a materialized view, refreshed after each load: 160 m bins
-at zoom 11 from the blocks, each zoom out merging 2 × 2. Zoomed-out tiles
+`spot_counts` is a materialized view, refreshed after each load: 160 m squares
+at zoom 11 from the 80 m squares, each zoom out merging 2 × 2. Zoomed-out tiles
 read only the step counts, so a tile costs the same however much data
 there is.
 

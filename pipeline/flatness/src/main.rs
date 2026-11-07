@@ -396,7 +396,7 @@ const SLOPE_STEPS: usize = (MAX_STORED_SLOPE_DEG * 2.0) as usize;
 const NO_SPOT: u8 = 255;
 
 /// One row per 80 m block with at least one usable cell, ready for Postgres
-/// `COPY` into table `block` (see db/schema.sql): tent, season, block column
+/// `COPY` into table `spots_80m` (see db/schema.sql): tent, season, block column
 /// and row (x / 80, y / 80 in EPSG:25833), the 64 cells' slopes as bytes, and
 /// how many cells are up to 0.5°, 1°, 1.5°, … steep.
 fn write_blocks_csv(

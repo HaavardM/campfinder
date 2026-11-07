@@ -13,6 +13,6 @@ const TILE_FORMAT = 4;
 // keep tiles forever (see lib/flat-layers.ts).
 export const getTileVersion = createServerFn().handler(async () => {
 	const [row] = await sql<{ loaded: string }[]>`
-		SELECT coalesce(max(csv_mtime), 0)::text AS loaded FROM block_load`;
+		SELECT coalesce(max(csv_mtime), 0)::text AS loaded FROM loaded_files`;
 	return `${TILE_FORMAT}.${row.loaded}`;
 });
