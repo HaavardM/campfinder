@@ -11,8 +11,20 @@ CREATE TABLE IF NOT EXISTS tent (
 -- row per block and tent: a row per cell would spend more on Postgres's
 -- per-row overhead (~30 bytes) than on the data. Blocks without any usable
 -- cell aren't stored.
+DO $$ BEGIN
+    -- One-off: results became per season. Drop the old tables (and with
+    -- them the bins view); the loader then loads everything again.
+    IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'block')
+       AND NOT EXISTS (SELECT FROM information_schema.columns
+                       WHERE table_name = 'block' AND column_name = 'season') THEN
+        DROP TABLE block, block_load CASCADE;
+    END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS block (
     tent   text    NOT NULL, -- tent slug, e.g. 'keron-4-gt'
+    -- 'summer', or 'winter': snow-covered, so bogs are fine (see
+    -- SUMMER_ONLY_KINDS in the engine).
+    season text    NOT NULL,
     bx     integer NOT NULL, -- block column: x / 80, EPSG:25833 metres
     by     integer NOT NULL, -- block row: y / 80
     -- 64 bytes, one per cell, row by row from the south-west corner: the
@@ -23,7 +35,7 @@ CREATE TABLE IF NOT EXISTS block (
     -- (from 1) counts cells up to 0.5·k degrees. The map's zoomed-out score
     -- needs only these counts, and at max slope m reads element 2·m.
     cells_up_to_step integer[] NOT NULL,
-    PRIMARY KEY (tent, bx, by)
+    PRIMARY KEY (tent, season, bx, by)
 );
 
 -- The blocks' step counts summed into larger bins for zoomed-out map tiles:
@@ -46,6 +58,7 @@ DO $$ BEGIN
 END $$;
 CREATE MATERIALIZED VIEW IF NOT EXISTS bin AS
 SELECT b.tent,
+       b.season,
        z::smallint AS zoom,
        b.bx >> (12 - z) AS bx, -- bin column: x / bin size
        b.by >> (12 - z) AS by, -- bin row: y / bin size
@@ -57,15 +70,16 @@ SELECT b.tent,
            sum(b.cells_up_to_step[17]), sum(b.cells_up_to_step[18]), sum(b.cells_up_to_step[19]), sum(b.cells_up_to_step[20])
        ]::integer[] AS cells_up_to_step -- as in block
 FROM block b, generate_series(5, 11) AS z
-GROUP BY b.tent, z, 3, 4;
+GROUP BY b.tent, b.season, z, 4, 5;
 -- The map's lookups, and REFRESH ... CONCURRENTLY needs a unique index.
-CREATE UNIQUE INDEX IF NOT EXISTS bin_key ON bin (tent, zoom, bx, by);
+CREATE UNIQUE INDEX IF NOT EXISTS bin_key ON bin (tent, season, zoom, bx, by);
 
 -- Which tile CSVs are loaded, so reloading skips what hasn't changed. Kept
 -- in the database itself, so a fresh database simply loads everything.
 CREATE TABLE IF NOT EXISTS block_load (
     tile       text   NOT NULL,
     tent       text   NOT NULL,
+    season     text   NOT NULL,
     csv_mtime  bigint NOT NULL, -- the CSV's modification time when loaded
-    PRIMARY KEY (tile, tent)
+    PRIMARY KEY (tile, tent, season)
 );

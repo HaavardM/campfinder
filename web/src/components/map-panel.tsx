@@ -17,8 +17,11 @@ import { BASEMAPS, type Basemap, isBasemap } from "#/lib/basemaps";
 import {
 	AREA_COLOUR,
 	AREA_OUTLINE_COLOUR,
+	isSeason,
 	MAX_SLOPE_DEG,
 	SCORE_COLOURS,
+	SEASONS,
+	type Season,
 } from "#/lib/flat-layers";
 import type { Place } from "#/lib/place-search";
 import { REGIONS, type Region } from "#/lib/regions";
@@ -28,6 +31,8 @@ type Props = {
 	tents: TentRow[];
 	tent: string | undefined;
 	onTentChange: (tent: string) => void;
+	season: Season;
+	onSeasonChange: (season: Season) => void;
 	maxSlope: number;
 	onMaxSlopeChange: (maxSlope: number) => void;
 	minArea: number;
@@ -69,6 +74,24 @@ export function MapPanel(props: Props) {
 							))}
 						</SelectContent>
 					</Select>
+
+					{/* Winter: snow covers the bogs, so they count as ground. */}
+					<ToggleGroup
+						type="single"
+						variant="outline"
+						size="sm"
+						className="w-full"
+						value={props.season}
+						onValueChange={(value) => {
+							if (isSeason(value)) props.onSeasonChange(value);
+						}}
+					>
+						{Object.entries(SEASONS).map(([season, label]) => (
+							<ToggleGroupItem key={season} value={season} className="flex-1">
+								{label}
+							</ToggleGroupItem>
+						))}
+					</ToggleGroup>
 
 					<div className="flex flex-col gap-2">
 						<div className="flex justify-between text-sm">

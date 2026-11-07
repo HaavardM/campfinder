@@ -2,7 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 
 import { sql } from "#/server/db";
 
-// GET /tiles/{z}/{x}/{y}?tent=keron-4-gt&maxSlope=5&minArea=300&v=3.1730900000
+// GET /tiles/{z}/{x}/{y}?tent=keron-4-gt&season=summer&maxSlope=5&minArea=300&v=3.1730900000
+// (season: summer, or winter, when snow covers bogs.)
 // (v only makes the URL unique per data and format version, for caching:
 // change TILE_FORMAT in server/tile-version.ts with any change below that
 // changes what a tile holds.)
@@ -44,11 +45,14 @@ export const Route = createFileRoute("/tiles/$z/$x/$y")({
 				const y = Number(params.y);
 				const search = new URL(request.url).searchParams;
 				const tent = search.get("tent");
+				const season = search.get("season");
 				const maxSlope = Number(search.get("maxSlope") || Number.NaN);
 				const minArea = Number(search.get("minArea") || Number.NaN);
-				if (!tent || ![z, x, y, maxSlope, minArea].every(Number.isFinite)) {
+				const numbers = [z, x, y, maxSlope, minArea];
+				const seasonOk = season === "summer" || season === "winter";
+				if (!tent || !seasonOk || !numbers.every(Number.isFinite)) {
 					return new Response(
-						"expected /tiles/z/x/y?tent=…&maxSlope=…&minArea=…",
+						"expected /tiles/z/x/y?tent=…&season=summer|winter&maxSlope=…&minArea=…",
 						{
 							status: 400,
 						},
@@ -58,7 +62,7 @@ export const Route = createFileRoute("/tiles/$z/$x/$y")({
 					return new Response(null, { status: 204 });
 				}
 
-				const [row] = await tile(z, x, y, tent, maxSlope, minArea);
+				const [row] = await tile(z, x, y, tent, season, maxSlope, minArea);
 				return new Response(row.mvt, {
 					headers: {
 						"Content-Type": "application/vnd.mapbox-vector-tile",
@@ -88,6 +92,7 @@ function tile(
 	x: number,
 	y: number,
 	tent: string,
+	season: string,
 	maxSlope: number,
 	minArea: number,
 ) {
@@ -99,8 +104,9 @@ function tile(
 	// Each bin's slope step counts: the blocks themselves at zoom 12.
 	const bins =
 		binZoom === MAX_BIN_ZOOM
-			? sql`SELECT bx, by, cells_up_to_step FROM block WHERE tent = ${tent}`
-			: sql`SELECT bx, by, cells_up_to_step FROM bin WHERE tent = ${tent} AND zoom = ${binZoom}`;
+			? sql`SELECT bx, by, cells_up_to_step FROM block WHERE tent = ${tent} AND season = ${season}`
+			: sql`SELECT bx, by, cells_up_to_step FROM bin
+			      WHERE tent = ${tent} AND season = ${season} AND zoom = ${binZoom}`;
 	return sql`
 		WITH tile AS (
 			-- The tile's square in Web Mercator and in UTM 33, and the request's
@@ -146,7 +152,7 @@ function tile(
 			       b.by * ${BLOCK_M} + i / 8 * 10 AS y
 			FROM block b, tile, generate_series(0, 63) AS i
 			WHERE tile.z >= ${AREAS_FROM_ZOOM}
-			  AND b.tent = ${tent}
+			  AND b.tent = ${tent} AND b.season = ${season}
 			  AND ${nearTile(BLOCK_M)}
 			  AND get_byte(b.slopes, i) <= tile.max_slope * 10
 		),

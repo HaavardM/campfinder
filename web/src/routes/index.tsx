@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 
 import { MapPanel } from "#/components/map-panel";
 import { type Basemap, isBasemap, showBasemap } from "#/lib/basemaps";
-import { showFlat } from "#/lib/flat-layers";
+import { isSeason, type Season, showFlat } from "#/lib/flat-layers";
 import { type MapView, useMaplibre } from "#/lib/use-maplibre";
 import { getTents } from "#/server/tents";
 import { getTileVersion } from "#/server/tile-version";
@@ -13,6 +13,7 @@ import { getTileVersion } from "#/server/tile-version";
 type MapSearch = MapView & {
 	basemap: Basemap;
 	tent?: string; // tent slug; the first tent if not set
+	season: Season;
 	maxSlope: number; // degrees
 	minArea: number; // m²: smaller areas with room for the tent are left out
 };
@@ -22,6 +23,7 @@ const RONDANE: MapSearch = {
 	lon: 9.73,
 	zoom: 10,
 	basemap: "topo",
+	season: "summer",
 	maxSlope: 3,
 	minArea: 300,
 };
@@ -39,6 +41,7 @@ export const Route = createFileRoute("/")({
 		zoom: numberOr(search.zoom, RONDANE.zoom),
 		basemap: isBasemap(search.basemap) ? search.basemap : RONDANE.basemap,
 		tent: typeof search.tent === "string" ? search.tent : undefined,
+		season: isSeason(search.season) ? search.season : RONDANE.season,
 		maxSlope: numberOr(search.maxSlope, RONDANE.maxSlope),
 		minArea: numberOr(search.minArea, RONDANE.minArea),
 	}),
@@ -89,10 +92,10 @@ function MapPage() {
 
 	useEffect(() => {
 		if (map && tent) {
-			const { maxSlope, minArea } = search;
-			showFlat(map, { tent, maxSlope, minArea, tileVersion });
+			const { season, maxSlope, minArea } = search;
+			showFlat(map, { tent, season, maxSlope, minArea, tileVersion });
 		}
-	}, [map, tent, search.maxSlope, search.minArea, tileVersion]);
+	}, [map, tent, search.season, search.maxSlope, search.minArea, tileVersion]);
 
 	return (
 		<main className="relative h-dvh w-full">
@@ -105,6 +108,13 @@ function MapPage() {
 				onTentChange={(tent) =>
 					navigate({
 						search: (previous) => ({ ...previous, tent }),
+						replace: true,
+					})
+				}
+				season={search.season}
+				onSeasonChange={(season) =>
+					navigate({
+						search: (previous) => ({ ...previous, season }),
 						replace: true,
 					})
 				}

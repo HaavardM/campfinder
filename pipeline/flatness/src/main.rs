@@ -58,8 +58,10 @@ struct Setup {
     /// South-west corners of every tile of every region, each once
     /// (regions may overlap).
     tiles: BTreeSet<(u32, u32)>,
-    /// Where no tent may go, from the map.
+    /// Where no tent may go, from the map, in any season…
     no_go: NoGo,
+    /// …and only in summer: what snow covers (bogs).
+    summer_only: NoGo,
     /// Lakes, rivers and sea alone, for the water level next to the shore.
     water: NoGo,
     /// How the no-go areas were made (`prepare_no_go.sh` writes it next to
@@ -179,11 +181,13 @@ fn prepare() -> Result<Setup, String> {
         recipes.insert(recipe.trim().to_string());
         gpkgs.push(gpkg);
     }
-    let no_go = NoGo::load(&gpkgs, |_| true)?;
+    let no_go = NoGo::load(&gpkgs, |kind| !SUMMER_ONLY_KINDS.contains(&kind))?;
+    let summer_only = NoGo::load(&gpkgs, |kind| SUMMER_ONLY_KINDS.contains(&kind))?;
     let water = NoGo::load(&gpkgs, |kind| WATER_KINDS.contains(&kind))?;
     println!(
-        "{} no-go polygons, {} of them water",
+        "{} no-go polygons, {} more in summer, {} of them water",
         no_go.polygon_count(),
+        summer_only.polygon_count(),
         water.polygon_count()
     );
 
@@ -193,6 +197,7 @@ fn prepare() -> Result<Setup, String> {
         footprints,
         tiles,
         no_go,
+        summer_only,
         water,
         no_go_recipe: recipes.into_iter().collect::<Vec<_>>().join("+"),
     })
@@ -336,15 +341,31 @@ fn process(job: &Job, setup: &Setup) -> Result<String, String> {
     if job.needs_elevation {
         geotiff::write_f32(&out_dir.join(ELEVATION_FILE), n, n, &cell_heights, &at)?;
     }
-    let cost = pixel_cost(&elevation, &blocked, setup.args.max_roughness_m);
+    // In summer, also what snow covers in winter.
+    let summer_only = setup
+        .summer_only
+        .mask(west, north, DTM_SIZE_PX)
+        .map_err(|e| format!("{}: summer no-go mask: {e}", job.name))?;
+    let mut summer_blocked = blocked.clone();
+    for (b, &s) in summer_blocked.iter_mut().zip(&summer_only) {
+        *b |= s;
+    }
+    let roughness = setup.args.max_roughness_m;
+    let seasons = [
+        (SUMMER, pixel_cost(&elevation, &summer_blocked, roughness)),
+        (WINTER, pixel_cost(&elevation, &blocked, roughness)),
+    ];
+
     for &t in &job.tents {
         let tent = &setup.config.tents[t];
-        let cells = summarise(&best_placement(&cost, &setup.footprints[t]));
-        let file = |kind: &str| out_dir.join(format!("{}.{kind}", tent.slug()));
-        write_blocks_csv(&file("blocks.csv"), job, &tent.slug(), &cells)?;
-        geotiff::write_f32(&file("slope.tif"), n, n, &cells.max_slope, &at)?;
-        if let Shape::Rectangle { .. } = tent.shape {
-            geotiff::write_i16(&file("heading.tif"), n, n, &cells.heading, &at)?;
+        for (season, cost) in &seasons {
+            let cells = summarise(&best_placement(cost, &setup.footprints[t]));
+            let file = |kind: &str| out_dir.join(format!("{}.{season}.{kind}", tent.slug()));
+            write_blocks_csv(&file("blocks.csv"), job, &tent.slug(), season, &cells)?;
+            geotiff::write_f32(&file("slope.tif"), n, n, &cells.max_slope, &at)?;
+            if let Shape::Rectangle { .. } = tent.shape {
+                geotiff::write_i16(&file("heading.tif"), n, n, &cells.heading, &at)?;
+            }
         }
         // Written last: marks this tent as done, with these settings.
         let settings = settings_used(&setup.footprints[t], setup);
@@ -375,14 +396,20 @@ const SLOPE_STEPS: usize = (MAX_STORED_SLOPE_DEG * 2.0) as usize;
 const NO_SPOT: u8 = 255;
 
 /// One row per 80 m block with at least one usable cell, ready for Postgres
-/// `COPY` into table `block` (see db/schema.sql): tent, block column and row
-/// (x / 80, y / 80 in EPSG:25833), the 64 cells' slopes as bytes, and how
-/// many cells are up to 0.5°, 1°, 1.5°, … steep.
-fn write_blocks_csv(path: &Path, job: &Job, tent: &str, cells: &CellResult) -> Result<(), String> {
+/// `COPY` into table `block` (see db/schema.sql): tent, season, block column
+/// and row (x / 80, y / 80 in EPSG:25833), the 64 cells' slopes as bytes, and
+/// how many cells are up to 0.5°, 1°, 1.5°, … steep.
+fn write_blocks_csv(
+    path: &Path,
+    job: &Job,
+    tent: &str,
+    season: &str,
+    cells: &CellResult,
+) -> Result<(), String> {
     use std::fmt::Write;
     let block_m = BLOCK_CELLS * CELL_SIZE_M;
     let blocks_per_side = CELLS_PER_SIDE / BLOCK_CELLS;
-    let mut csv = String::from("tent,bx,by,slopes,cells_up_to_step\n");
+    let mut csv = String::from("tent,season,bx,by,slopes,cells_up_to_step\n");
     for block_row in 0..blocks_per_side {
         for block_col in 0..blocks_per_side {
             // Bytes go row by row from the block's south-west corner.
@@ -421,7 +448,7 @@ fn write_blocks_csv(path: &Path, job: &Job, tent: &str, cells: &CellResult) -> R
             let counts: Vec<String> = up_to_step.iter().map(u32::to_string).collect();
             writeln!(
                 csv,
-                "{tent},{bx},{by},\\x{hex},\"{{{}}}\"",
+                "{tent},{season},{bx},{by},\\x{hex},\"{{{}}}\"",
                 counts.join(",")
             )
             .unwrap();
@@ -439,6 +466,12 @@ fn done_path(out_dir: &Path, tent: &Tent) -> PathBuf {
     out_dir.join(format!("{}.done", tent.slug()))
 }
 
+/// Results come in two seasons. In winter, snow covers what's only a problem
+/// in summer: these no-go kinds (as named in prepare_no_go.sh) are allowed.
+const SUMMER: &str = "summer";
+const WINTER: &str = "winter";
+const SUMMER_ONLY_KINDS: [&str; 1] = ["Myr"];
+
 /// The no-go kinds that are water (as `WATER` in prepare_no_go.sh).
 const WATER_KINDS: [&str; 5] = ["Innsjø", "InnsjøRegulert", "Elv", "FerskvannTørrfall", "Havflate"];
 /// How far from the water `mark_low_shore` looks for its level, in pixels
@@ -450,7 +483,7 @@ const MAX_SMOOTH_RESIDUAL_M: f32 = 0.001;
 /// The version of what the engine writes. Change it with any change to the
 /// output files or to how results are computed: it makes every tile count as
 /// not done, so they're all redone.
-const OUTPUT_FORMAT: u32 = 3;
+const OUTPUT_FORMAT: u32 = 4;
 
 fn settings_used(footprint: &Footprint, setup: &Setup) -> String {
     let args = &setup.args;

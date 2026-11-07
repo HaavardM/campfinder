@@ -70,8 +70,16 @@ function radius(): ExpressionSpecification {
 	return ["interpolate", ["exponential", 2], ["zoom"], ...stops];
 }
 
+// Results are computed for both: in winter, snow covers the bogs.
+export const SEASONS = { summer: "Summer", winter: "Winter" } as const;
+export type Season = keyof typeof SEASONS;
+export function isSeason(value: unknown): value is Season {
+	return typeof value === "string" && value in SEASONS;
+}
+
 export type FlatFilter = {
 	tent: string;
+	season: Season;
 	maxSlope: number;
 	minArea: number; // m²: smaller areas are left out
 	tileVersion: string; // see server/tile-version.ts
@@ -92,11 +100,12 @@ addProtocol(PROTOCOL, async ({ url }) => {
 	return { data: await response.arrayBuffer() };
 });
 
-function tileUrl({ tent, maxSlope, minArea, tileVersion }: FlatFilter) {
+function tileUrl({ tent, season, maxSlope, minArea, tileVersion }: FlatFilter) {
 	// The version makes the URL name exactly one tile's content, so
 	// browsers may keep it forever (see the tile route's Cache-Control).
 	const params = new URLSearchParams({
 		tent,
+		season,
 		maxSlope: String(maxSlope),
 		minArea: String(minArea),
 		v: tileVersion,
