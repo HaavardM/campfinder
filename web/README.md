@@ -1,10 +1,10 @@
 # Campfinder web app
 
-TanStack Start (React) with shadcn/ui and MapLibre, built as a static site.
+Vite + React with shadcn/ui and MapLibre, built as a static site.
 See the [top-level README](../README.md) to run and publish it, and
 [PLAN.md](../PLAN.md) for what the map shows.
 
-- `src/routes/index.tsx`: the map page; its state lives in the URL.
+- `src/map-page.tsx`: the map page; its state lives in the URL.
 - `src/lib/map-data.ts`: the map's files (`manifest.json` and one PMTiles file
   per tent and season), from `/map` (served by `worker/index.ts` from R2) or
   `VITE_MAP_URL`.

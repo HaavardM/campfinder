@@ -1,5 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { MapPanel } from "#/components/map-panel";
 import { type Basemap, isBasemap, showBasemap } from "#/lib/basemaps";
@@ -9,7 +8,7 @@ import {
 	type SlopeLimit,
 	showFlat,
 } from "#/lib/flat-layers";
-import { getManifest, pmtilesUrl } from "#/lib/map-data";
+import { type Manifest, pmtilesUrl } from "#/lib/map-data";
 import { isSeason, type Season } from "#/lib/seasons";
 import { type MapView, useMaplibre } from "#/lib/use-maplibre";
 
@@ -33,67 +32,77 @@ const RONDANE: MapSearch = {
 	minArea: 300,
 };
 
-function numberOr(value: unknown, fallback: number) {
-	return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+// A number from the URL; NaN if it's missing or not a number.
+function numberIn(params: URLSearchParams, key: string) {
+	const value = params.get(key);
+	return value === null ? Number.NaN : Number(value);
 }
 
-export const Route = createFileRoute("/")({
-	// MapLibre needs a browser (WebGL, window), so don't render on the server.
-	ssr: false,
-	validateSearch: (search): MapSearch => ({
-		lat: numberOr(search.lat, RONDANE.lat),
-		lon: numberOr(search.lon, RONDANE.lon),
-		zoom: numberOr(search.zoom, RONDANE.zoom),
-		basemap: isBasemap(search.basemap) ? search.basemap : RONDANE.basemap,
-		tent: typeof search.tent === "string" ? search.tent : undefined,
-		season: isSeason(search.season) ? search.season : RONDANE.season,
-		maxSlope: isSlopeLimit(search.maxSlope)
-			? search.maxSlope
-			: RONDANE.maxSlope,
-		minArea: numberOr(search.minArea, RONDANE.minArea),
-	}),
-	loader: () => getManifest(),
-	component: MapPage,
-});
+function numberOr(value: number, fallback: number) {
+	return Number.isFinite(value) ? value : fallback;
+}
 
-function MapPage() {
-	const search = Route.useSearch();
-	const manifest = Route.useLoaderData();
+// The view from the URL, with defaults for what's missing or wrong.
+function readSearch(params: URLSearchParams): MapSearch {
+	const basemap = params.get("basemap");
+	const season = params.get("season");
+	const maxSlope = numberIn(params, "maxSlope");
+	return {
+		lat: numberOr(numberIn(params, "lat"), RONDANE.lat),
+		lon: numberOr(numberIn(params, "lon"), RONDANE.lon),
+		zoom: numberOr(numberIn(params, "zoom"), RONDANE.zoom),
+		basemap: isBasemap(basemap) ? basemap : RONDANE.basemap,
+		tent: params.get("tent") ?? undefined,
+		season: isSeason(season) ? season : RONDANE.season,
+		maxSlope: isSlopeLimit(maxSlope) ? maxSlope : RONDANE.maxSlope,
+		minArea: numberOr(numberIn(params, "minArea"), RONDANE.minArea),
+	};
+}
+
+// The view as a URL query: "lat=61.93&lon=9.73&zoom=10&…".
+function writeSearch(search: MapSearch) {
+	const params = new URLSearchParams();
+	for (const [key, value] of Object.entries(search)) {
+		if (value !== undefined) params.set(key, String(value));
+	}
+	return params.toString();
+}
+
+export function MapPage({ manifest }: { manifest: Manifest }) {
+	const [search, setSearchState] = useState(() =>
+		readSearch(new URLSearchParams(window.location.search)),
+	);
 	const tents = manifest.tents;
-	const navigate = useNavigate({ from: "/" });
-	// A control changed: update its value in the URL. `replace` keeps the
-	// browser history from filling up with every change.
 	const setSearch = (change: Partial<MapSearch>) =>
-		navigate({
-			search: (previous) => ({ ...previous, ...change }),
-			replace: true,
-		});
+		setSearchState((previous) => ({ ...previous, ...change }));
+
+	// State → URL, whatever changed it. `replaceState` keeps the browser
+	// history from filling up with every change.
+	useEffect(() => {
+		window.history.replaceState(null, "", `?${writeSearch(search)}`);
+	}, [search]);
 	const containerRef = useRef<HTMLDivElement>(null);
 	const map = useMaplibre(containerRef, search, search.basemap);
 	const tent = search.tent ?? tents[0]?.slug;
 
-	// Map → URL: after each pan or zoom, write the new view into the URL.
-	// `replace` keeps the browser history from filling up with every move.
+	// Map → state: after each pan or zoom, keep the new view.
 	useEffect(() => {
 		if (!map) return;
 		const onMoveEnd = () => {
 			const center = map.getCenter();
-			navigate({
-				search: (previous) => ({
-					...previous,
-					// 5 decimals ≈ 1 m, plenty for a map view.
-					lat: Number(center.lat.toFixed(5)),
-					lon: Number(center.lng.toFixed(5)),
-					zoom: Number(map.getZoom().toFixed(2)),
-				}),
-				replace: true,
-			});
+			setSearchState((previous) => ({
+				...previous,
+				// 5 decimals ≈ 1 m, plenty for a map view.
+				lat: Number(center.lat.toFixed(5)),
+				lon: Number(center.lng.toFixed(5)),
+				zoom: Number(map.getZoom().toFixed(2)),
+			}));
 		};
 		map.on("moveend", onMoveEnd);
 		return () => {
 			map.off("moveend", onMoveEnd);
 		};
-	}, [map, navigate]);
+	}, [map]);
 
 	useEffect(() => {
 		if (map) showBasemap(map, search.basemap);
@@ -134,7 +143,7 @@ function MapPage() {
 				onRegionSelect={(region) =>
 					map?.fitBounds(region.bounds, { padding: 40 })
 				}
-			/>{" "}
+			/>
 		</main>
 	);
 }

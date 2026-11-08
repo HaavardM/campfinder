@@ -21,7 +21,7 @@ scale on many cores.
 
 | Part | Choice |
 |---|---|
-| Web app | React, TypeScript, TanStack Start |
+| Web app | React, TypeScript, Vite |
 | UI | shadcn/ui, Tailwind, MapLibre GL JS |
 | Map data | Files: one PMTiles per tent and season, from any static host or bucket |
 | Pipeline | Bash, GDAL tools, tippecanoe |

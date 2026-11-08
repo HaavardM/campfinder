@@ -8,7 +8,7 @@ compatibility_date = "2026-11-01"
 # The built site. Unknown paths get index.html, as a single-page app wants.
 # /map/* always goes to the Worker; nothing else does.
 [assets]
-directory = "dist/client"
+directory = "dist"
 not_found_handling = "single-page-application"
 run_worker_first = ["/map/*"]
 
