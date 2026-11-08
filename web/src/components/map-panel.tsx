@@ -1,4 +1,5 @@
-import { Satellite, Tent } from "lucide-react";
+import { ChevronDown, Satellite, Tent } from "lucide-react";
+import { Collapsible } from "radix-ui";
 import { useState } from "react";
 
 import { PlaceSearch } from "#/components/place-search";
@@ -51,135 +52,153 @@ export function MapPanel(props: Props) {
 
 	return (
 		<Card className="absolute top-3 left-3 z-10 w-[min(20rem,calc(100vw-5rem))] gap-0 py-0 shadow-lg">
-			<CardContent className="flex flex-col gap-3 p-3">
-				<div className="flex items-center gap-2 font-semibold">
-					<Tent className="size-5" />
-					Campfinder
-				</div>
-
-				<PlaceSearch onSelect={props.onPlaceSelect} />
-
-				<div className="flex flex-col gap-3 rounded-md border p-3">
-					<Select value={props.tent} onValueChange={props.onTentChange}>
-						<SelectTrigger className="w-full" aria-label="Tent">
-							<SelectValue placeholder="No tents computed yet" />
-						</SelectTrigger>
-						<SelectContent>
-							{props.tents.map((tent) => (
-								<SelectItem key={tent.slug} value={tent.slug}>
-									{tent.name}
-								</SelectItem>
-							))}
-						</SelectContent>
-					</Select>
-
-					{/* Winter: snow covers the bogs, so they count as ground. */}
-					<ToggleGroup
-						type="single"
-						variant="outline"
-						size="sm"
-						className="w-full"
-						value={props.season}
-						onValueChange={(value) => {
-							if (isSeason(value)) props.onSeasonChange(value);
-						}}
+			{/* Tapping the title folds the panel down to it, so the map can be
+			    seen on a small screen. */}
+			<Collapsible.Root asChild defaultOpen>
+				<CardContent className="flex flex-col p-3">
+					<Collapsible.Trigger
+						className="group flex items-center gap-2 font-semibold"
+						title="Show or hide the menu"
 					>
-						{Object.entries(SEASONS).map(([season, label]) => (
-							<ToggleGroupItem key={season} value={season} className="flex-1">
-								{label}
-							</ToggleGroupItem>
-						))}
-					</ToggleGroup>
+						<Tent className="size-5" />
+						Campfinder
+						<ChevronDown className="ml-auto size-5 transition-transform duration-200 group-data-[state=open]:rotate-180" />
+					</Collapsible.Trigger>
 
-					{/* The slope limits the map files have areas for. */}
-					<div className="flex items-center justify-between gap-2 text-sm">
-						<span className="text-muted-foreground">Max slope</span>
-						<ToggleGroup
-							type="single"
-							variant="outline"
-							size="sm"
-							value={String(props.maxSlope)}
-							onValueChange={(value) => {
-								const limit = SLOPE_LIMITS.find((l) => String(l) === value);
-								if (limit) props.onMaxSlopeChange(limit);
-							}}
-						>
-							{SLOPE_LIMITS.map((limit) => (
-								<ToggleGroupItem
-									key={limit}
-									value={String(limit)}
-									className="px-3"
+					<Collapsible.Content className="-mx-1 overflow-hidden px-1 data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+						<div className="flex flex-col gap-3 pt-3 pb-1">
+							<PlaceSearch onSelect={props.onPlaceSelect} />
+
+							<div className="flex flex-col gap-3 rounded-md border p-3">
+								<Select value={props.tent} onValueChange={props.onTentChange}>
+									<SelectTrigger className="w-full" aria-label="Tent">
+										<SelectValue placeholder="No tents computed yet" />
+									</SelectTrigger>
+									<SelectContent>
+										{props.tents.map((tent) => (
+											<SelectItem key={tent.slug} value={tent.slug}>
+												{tent.name}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+
+								{/* Winter: snow covers the bogs, so they count as ground. */}
+								<ToggleGroup
+									type="single"
+									variant="outline"
+									size="sm"
+									className="w-full"
+									value={props.season}
+									onValueChange={(value) => {
+										if (isSeason(value)) props.onSeasonChange(value);
+									}}
 								>
-									{limit}°
-								</ToggleGroupItem>
-							))}
-						</ToggleGroup>
-					</div>
+									{Object.entries(SEASONS).map(([season, label]) => (
+										<ToggleGroupItem
+											key={season}
+											value={season}
+											className="flex-1"
+										>
+											{label}
+										</ToggleGroupItem>
+									))}
+								</ToggleGroup>
 
-					<div className="flex flex-col gap-2">
-						<div className="flex justify-between text-sm">
-							<span className="text-muted-foreground">Min area</span>
-							<span className="font-medium tabular-nums">{area} m²</span>
+								{/* The slope limits the map files have areas for. */}
+								<div className="flex items-center justify-between gap-2 text-sm">
+									<span className="text-muted-foreground">Max slope</span>
+									<ToggleGroup
+										type="single"
+										variant="outline"
+										size="sm"
+										value={String(props.maxSlope)}
+										onValueChange={(value) => {
+											const limit = SLOPE_LIMITS.find(
+												(l) => String(l) === value,
+											);
+											if (limit) props.onMaxSlopeChange(limit);
+										}}
+									>
+										{SLOPE_LIMITS.map((limit) => (
+											<ToggleGroupItem
+												key={limit}
+												value={String(limit)}
+												className="px-3"
+											>
+												{limit}°
+											</ToggleGroupItem>
+										))}
+									</ToggleGroup>
+								</div>
+
+								<div className="flex flex-col gap-2">
+									<div className="flex justify-between text-sm">
+										<span className="text-muted-foreground">Min area</span>
+										<span className="font-medium tabular-nums">{area} m²</span>
+									</div>
+									<Slider
+										min={100}
+										max={2000}
+										step={100}
+										value={[area]}
+										onValueChange={([value]) => setArea(value)}
+										onValueCommit={([value]) => props.onMinAreaChange(value)}
+										aria-label="Min area"
+									/>
+								</div>
+
+								<ScoreLegend />
+							</div>
+
+							<div className="flex gap-1">
+								{REGIONS.map((region) => (
+									<Button
+										key={region.name}
+										variant="secondary"
+										size="sm"
+										className="flex-1"
+										onClick={() => props.onRegionSelect(region)}
+									>
+										{region.name}
+									</Button>
+								))}
+							</div>
+
+							<div className="flex gap-1">
+								<Button asChild variant="outline" size="sm" className="px-2.5">
+									<a
+										href={props.photoUrl}
+										target="_blank"
+										rel="noreferrer"
+										title="Satellite photo of this view (Google Maps)"
+									>
+										<Satellite />
+									</a>
+								</Button>
+								<ToggleGroup
+									type="single"
+									variant="outline"
+									size="sm"
+									className="flex-1"
+									value={props.basemap}
+									// Radix sends "" when the active item is clicked again; ignore it
+									// so one basemap is always selected.
+									onValueChange={(value) => {
+										if (isBasemap(value)) props.onBasemapChange(value);
+									}}
+								>
+									{Object.entries(BASEMAPS).map(([name, { label }]) => (
+										<ToggleGroupItem key={name} value={name} className="flex-1">
+											{label}
+										</ToggleGroupItem>
+									))}
+								</ToggleGroup>
+							</div>
 						</div>
-						<Slider
-							min={100}
-							max={2000}
-							step={100}
-							value={[area]}
-							onValueChange={([value]) => setArea(value)}
-							onValueCommit={([value]) => props.onMinAreaChange(value)}
-							aria-label="Min area"
-						/>
-					</div>
-
-					<ScoreLegend />
-				</div>
-
-				<div className="flex items-center justify-between gap-2">
-					<div className="flex gap-1">
-						{REGIONS.map((region) => (
-							<Button
-								key={region.name}
-								variant="secondary"
-								size="sm"
-								onClick={() => props.onRegionSelect(region)}
-							>
-								{region.name}
-							</Button>
-						))}
-					</div>
-
-					<div className="flex gap-1">
-						<Button asChild variant="outline" size="sm" className="px-2.5">
-							<a
-								href={props.photoUrl}
-								target="_blank"
-								rel="noreferrer"
-								title="Satellite photo of this view (Google Maps)"
-							>
-								<Satellite />
-							</a>
-						</Button>
-						<ToggleGroup
-							type="single"
-							variant="outline"
-							size="sm"
-							value={props.basemap}
-							// Radix sends "" when the active item is clicked again; ignore it
-							// so one basemap is always selected.
-							onValueChange={(value) => {
-								if (isBasemap(value)) props.onBasemapChange(value);
-							}}
-						>
-							{Object.entries(BASEMAPS).map(([name, { label }]) => (
-								<ToggleGroupItem key={name} value={name} className="px-2.5">
-									{label}
-								</ToggleGroupItem>
-							))}
-						</ToggleGroup>
-					</div>
-				</div>
-			</CardContent>
+					</Collapsible.Content>
+				</CardContent>
+			</Collapsible.Root>
 		</Card>
 	);
 }
