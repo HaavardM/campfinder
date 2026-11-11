@@ -13,7 +13,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
-use tiff::decoder::{Decoder, DecodingResult};
+use tiff::decoder::{ChunkType, Decoder, DecodingResult};
 use tiff::encoder::{Compression, DeflateLevel, TiffEncoder, colortype};
 use tiff::tags::Tag;
 
@@ -22,17 +22,56 @@ use crate::grid::Grid;
 /// Reads a single-band float32 GeoTIFF (an elevation tile from Kartverket)
 /// that must be `size` × `size` pixels. Georeferencing is not
 /// read back: the tile name says where it is.
+///
+/// A TIFF image is stored in pieces (tiles or strips), and Kartverket leaves
+/// out the pieces it has no data for: sea in both models, and Sweden in the
+/// surface model. Their byte count is 0, and those pixels become NaN, which
+/// the processing treats as missing data. (Read as a whole, the tiff crate
+/// fills such pieces with garbage, or fails if all are missing.)
 pub fn read_f32(path: &Path, size: usize) -> Result<Grid, String> {
+    let error = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let mut decoder = open_f32(path, size)?;
-    match decoder.read_image() {
-        Ok(DecodingResult::F32(data)) => Ok(Grid {
-            width: size,
-            height: size,
-            data,
-        }),
-        Ok(_) => Err(format!("{}: expected 32-bit float pixels", path.display())),
-        Err(e) => Err(format!("{}: {e}", path.display())),
+    let byte_counts = match decoder.get_chunk_type() {
+        ChunkType::Tile => decoder.get_tag_u64_vec(Tag::TileByteCounts),
+        ChunkType::Strip => decoder.get_tag_u64_vec(Tag::StripByteCounts),
     }
+    .map_err(|e| error(&e))?;
+
+    // Every piece there (all our own files): read the image in one go.
+    if byte_counts.iter().all(|&bytes| bytes > 0) {
+        return match decoder.read_image().map_err(|e| error(&e))? {
+            DecodingResult::F32(data) => Ok(Grid {
+                width: size,
+                height: size,
+                data,
+            }),
+            _ => Err(error(&"expected 32-bit float pixels")),
+        };
+    }
+
+    // Some pieces missing: start from all NaN and fill in the ones there.
+    let mut grid = Grid::filled(size, size, f32::NAN);
+    let (piece_width, piece_height) = decoder.chunk_dimensions();
+    let pieces_across = size.div_ceil(piece_width as usize);
+    for (index, &bytes) in byte_counts.iter().enumerate() {
+        if bytes == 0 {
+            continue; // no data here
+        }
+        let DecodingResult::F32(data) = decoder.read_chunk(index as u32).map_err(|e| error(&e))?
+        else {
+            return Err(error(&"expected 32-bit float pixels"));
+        };
+        // Pieces at the right and bottom edges can be smaller; `data` holds
+        // just their own pixels, row by row.
+        let width = decoder.chunk_data_dimensions(index as u32).0 as usize;
+        let left = (index % pieces_across) * piece_width as usize;
+        let top = (index / pieces_across) * piece_height as usize;
+        for (row, values) in data.chunks(width).enumerate() {
+            let start = (top + row) * size + left;
+            grid.data[start..start + width].copy_from_slice(values);
+        }
+    }
+    Ok(grid)
 }
 
 /// Is the elevation tile at `path` (as for `read_f32`) compressed? Reads
@@ -219,6 +258,15 @@ mod tests {
         let grid = read_f32(&path, 4).unwrap();
         assert_eq!(grid.data, data);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_pieces_read_as_nan() {
+        // Kartverket's real reply for a surface tile in Sweden: 2016 × 2016
+        // pixels in 128 × 128 pieces, and not one of them stored.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/no-data.tif");
+        let grid = read_f32(&path, 2016).unwrap();
+        assert!(grid.data.iter().all(|v| v.is_nan()));
     }
 
     #[test]

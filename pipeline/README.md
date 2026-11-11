@@ -36,6 +36,12 @@ Downloaded tiles are stored compressed without loss, about 7.5 MB instead of
 compressed in place, safely next to a running pipeline:
 `(cd flatness && cargo run --release --example compress_tiles -- ../data/dtm ../data/dom)`.
 
+Kartverket leaves out the parts of a tile it has no data for (sea, and
+Sweden in the surface model); they're read as missing data. Before that,
+they came out as garbage heights in tiles along the coast and the border.
+To find those and have the next run fetch them again:
+`(cd flatness && cargo run --release --example find_garbled_tiles -- ../data --delete)`.
+
 Rondane + Dovre is about 1,300 tiles: ~20 GB of terrain and surface data. Downloading is
 the slow part, under an hour. Kartverket's server builds each tile on
 request, ~8 s per tile and connection, so the engine downloads 8 at once

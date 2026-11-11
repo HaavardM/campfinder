@@ -78,11 +78,13 @@ pub fn pixel_cost(elevation: &Grid, blocked: &[u8], max_roughness_m: f32) -> Gri
 /// (DTM) is the bare ground, with everything on it removed; the surface
 /// model (DOM) is the first thing the laser hit, so treetops and roofs.
 /// Their difference is the height of whatever stands on the ground. Where
-/// the surface is missing (NaN), the comparison is false: nothing blocked.
+/// the surface is missing (NaN: no lidar there, as across the Swedish
+/// border), there's no telling what stands there, so it's blocked too.
 pub fn mark_obstacles(blocked: &mut [u8], elevation: &Grid, surface: &Grid, max_height_m: f32) {
     assert_eq!(surface.data.len(), elevation.data.len());
     for ((b, ground), top) in blocked.iter_mut().zip(&elevation.data).zip(&surface.data) {
-        if top - ground > max_height_m {
+        let height = top - ground;
+        if height.is_nan() || height > max_height_m {
             *b = 1;
         }
     }
@@ -214,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bush_blocks_but_grass_does_not() {
+    fn a_bush_and_missing_surface_block_but_grass_does_not() {
         let ground = tilted_plane(10, 0.02);
         let mut surface = ground.clone();
         surface.set(5, 5, ground.get(5, 5) + 1.2); // a 1.2 m bush
@@ -223,7 +225,8 @@ mod tests {
         let mut blocked = NOTHING_BLOCKED;
         mark_obstacles(&mut blocked, &ground, &surface, 0.5);
         assert_eq!(blocked[5 * 10 + 5], 1);
-        assert_eq!(blocked.iter().map(|&b| b as u32).sum::<u32>(), 1);
+        assert_eq!(blocked[3 * 10 + 3], 1);
+        assert_eq!(blocked.iter().map(|&b| b as u32).sum::<u32>(), 2);
     }
 
     #[test]
