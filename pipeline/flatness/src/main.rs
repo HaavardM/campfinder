@@ -253,6 +253,9 @@ fn download_missing(job: &Job) -> Result<String, String> {
         if !path.exists() {
             reports.push(download::tile(model, job.east, job.north, path)?);
         }
+        if download::no_land_marker(&job.dtm).exists() {
+            break; // no surface needed
+        }
     }
     Ok(reports.join(", "))
 }
@@ -260,6 +263,10 @@ fn download_missing(job: &Job) -> Result<String, String> {
 /// What a tile still needs, or None if it's done.
 fn plan(setup: &Setup, east: u32, north: u32) -> Option<Job> {
     let name = tile_name(east, north);
+    let dtm = setup.args.data.join(Model::Terrain.dir()).join(format!("{name}.tif"));
+    if download::no_land_marker(&dtm).exists() {
+        return None; // nothing to compute: no land
+    }
     let out_dir = setup.args.data.join("flatness").join(&name);
     let tents: Vec<usize> = (0..setup.config.tents.len())
         .filter(|&t| {
@@ -280,7 +287,7 @@ fn plan(setup: &Setup, east: u32, north: u32) -> Option<Job> {
             .join(format!("{name}.tif"))
     };
     Some(Job {
-        dtm: file(Model::Terrain),
+        dtm,
         dom: file(Model::Surface),
         name,
         east,
@@ -292,6 +299,9 @@ fn plan(setup: &Setup, east: u32, north: u32) -> Option<Job> {
 
 /// Processes one tile and returns a one-line report of how it went.
 fn process(job: &Job, setup: &Setup) -> Result<String, String> {
+    if download::no_land_marker(&job.dtm).exists() {
+        return Ok(format!("{} no land", job.name)); // just downloaded
+    }
     let started = std::time::Instant::now();
     let elevation = geotiff::read_f32(&job.dtm, DTM_SIZE_PX)?;
     let surface = geotiff::read_f32(&job.dom, DTM_SIZE_PX)?;
