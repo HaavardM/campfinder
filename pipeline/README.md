@@ -115,7 +115,10 @@ For each tile, the engine ([flatness/](flatness/), Rust):
    there. So is water the map draws in the wrong place: ground less than
    0.5 m above the lowest water within 30 m (a sliding minimum, done with
    the same code as step 2), and unnaturally smooth ground, where the
-   terrain model was interpolated across water the lidar barely saw.
+   terrain model was interpolated across water the lidar barely saw. That
+   makes the summer mask. The winter one differs on natural lakes: frozen,
+   they're ground (smooth on purpose, and with no surface for the lidar to
+   see), except within 100 m of a stream; and bogs are ground under snow.
 1. **Cost per 1 m pixel** ([terrain.rs](flatness/src/terrain.rs)): the slope in
    degrees (Horn's method, as `gdaldem slope`). Infinity where a tent can't
    stand: blocked, missing data, or rough ground.
@@ -169,8 +172,9 @@ cd .. && ./scaling.sh   # same tiles at 1, 2, 4, … threads: where does it stop
 ## Known limits
 
 - **No-go areas come from N50**, mapped at 1:50 000: bog and stream edges
-  can be off by several metres, and small ponds are missing. Lakes that the
-  terrain model flattens to one exact height are caught as well. (The
+  can be off by several metres, and small ponds are missing. Ponds, and
+  lakes the terrain model flattens to one exact height, are caught as
+  unnaturally smooth ground (in winter, not on N50's lakes). (The
   detailed FKB maps need a Norge digitalt licence.)
 - **Bog is excluded in summer only**: the winter results treat it as ground
   under snow.

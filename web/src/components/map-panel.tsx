@@ -83,7 +83,7 @@ export function MapPanel(props: Props) {
 									</SelectContent>
 								</Select>
 
-								{/* Winter: snow covers the bogs, so they count as ground. */}
+								{/* Winter: snow covers the bogs and natural lakes are frozen. */}
 								<ToggleGroup
 									type="single"
 									variant="outline"

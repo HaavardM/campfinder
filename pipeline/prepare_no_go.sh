@@ -20,7 +20,14 @@ HOUSE_DISTANCE_M=150
 # Keep just off the water's edge, where N50's shorelines put spots on the
 # waterline. Small on purpose: camping by the water is half the point.
 SHORE_M=2
-WATER="'Innsjø', 'InnsjøRegulert', 'Elv', 'FerskvannTørrfall', 'Havflate'"
+# Water no tent goes on, frozen or not. Regulated lakes (reservoirs) are
+# here too: their level drops under the ice, which makes it treacherous.
+WATER="'InnsjøRegulert', 'Elv', 'FerskvannTørrfall', 'Havflate'"
+# Natural lakes: no-go in summer, but frozen, a place for a winter tent.
+LAKE="'Innsjø'"
+# Around streams and rivers, the current keeps lake ice thin: no tents on
+# the ice this close to one.
+NEAR_STREAM_M=100
 # Land in use, as flat as it gets and no place for a tent.
 IN_USE="'DyrketMark', 'Industriområde', 'Golfbane', 'SportIdrettPlass', 'Alpinbakke',
   'Gravplass', 'Park', 'Lufthavn', 'Rullebane', 'Steinbrudd', 'Steintipp'"
@@ -29,7 +36,7 @@ IN_USE="'DyrketMark', 'Industriområde', 'Golfbane', 'SportIdrettPlass', 'Alpinb
 # the region: N50 layer, then which objects (an attribute filter). The
 # geodatabase driver applies both filters itself, which is fast.
 COPIES=(
-  "N50_Arealdekke_omrade" "objtype IN ($WATER, 'Myr', $IN_USE,
+  "N50_Arealdekke_omrade" "objtype IN ($WATER, $LAKE, 'Myr', $IN_USE,
     'Tettbebyggelse', 'BymessigBebyggelse')"
   "N50_Arealdekke_senterlinje" "objtype = 'ElvBekk'"
   # Inhabited buildings, by the building register's type: 111–179 are
@@ -43,12 +50,20 @@ COPIES=(
 # widens a shape by a distance; the third argument is the points per quarter
 # circle (4 makes a 16-sided circle, close enough; 1 cuts corners square).
 # Each polygon gets a class, all the engine looks at: "water" (no-go, and
-# the level the engine's low-shore rule measures from), "summer" (no-go
-# only without snow) or "always".
+# the level the engine's low-shore rule measures from), "lake" (the same in
+# summer; frozen, fine in winter), "near_stream" (no-go on lake ice in
+# winter), "summer" (no-go only without snow) or "always".
 QUERIES=(
   # Water, and its shore.
   "SELECT objtype AS kind, 'water' AS class, ST_Buffer(geom, $SHORE_M, 1) AS geom
    FROM N50_Arealdekke_omrade WHERE objtype IN ($WATER)"
+  "SELECT objtype AS kind, 'lake' AS class, ST_Buffer(geom, $SHORE_M, 1) AS geom
+   FROM N50_Arealdekke_omrade WHERE objtype IN ($LAKE)"
+  # Where streams and rivers keep lake ice thin.
+  "SELECT objtype AS kind, 'near_stream' AS class, ST_Buffer(geom, $NEAR_STREAM_M, 4) AS geom
+   FROM N50_Arealdekke_senterlinje"
+  "SELECT objtype AS kind, 'near_stream' AS class, ST_Buffer(geom, $NEAR_STREAM_M, 4) AS geom
+   FROM N50_Arealdekke_omrade WHERE objtype = 'Elv'"
   # Bogs: under snow, they're fine.
   "SELECT objtype AS kind, 'summer' AS class, geom FROM N50_Arealdekke_omrade
    WHERE objtype = 'Myr'"

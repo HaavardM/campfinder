@@ -17,8 +17,8 @@ use terrio::{DataType, Feature, Layer};
 /// and shared by every processing thread (it's only ever read).
 pub struct NoGo {
     polygons: Vec<Feature>,
-    /// Each polygon's class: "water", "summer" or "always" (see
-    /// prepare_no_go.sh).
+    /// Each polygon's class: "water", "lake", "near_stream", "summer" or
+    /// "always" (see prepare_no_go.sh).
     classes: Vec<String>,
     /// Each polygon's bounding box, so a tile can find the polygons near it
     /// with a few comparisons instead of looking at their shapes.

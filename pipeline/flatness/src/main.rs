@@ -59,8 +59,8 @@ struct Setup {
     /// South-west corners of every tile of every region, each once
     /// (regions may overlap).
     tiles: BTreeSet<(u32, u32)>,
-    /// Where no tent may go, from the map, by class: "always", "water", or
-    /// "summer" (what snow covers: bogs).
+    /// Where no tent may go, from the map, by class: "always", "water",
+    /// "lake", "near_stream", or "summer" (what snow covers: bogs).
     no_go: NoGo,
     /// How the no-go areas were made (`prepare_no_go.sh` writes it next to
     /// each GeoPackage), so changing that redoes the tiles.
@@ -173,9 +173,10 @@ fn prepare() -> Result<Setup, String> {
     }
     let no_go = NoGo::load(&gpkgs)?;
     println!(
-        "{} no-go polygons: {} of them water, {} only in summer",
+        "{} no-go polygons: {} of them water, {} lakes, {} only in summer",
         no_go.count(|_| true),
         no_go.count(|class| class == WATER),
+        no_go.count(|class| class == LAKE),
         no_go.count(|class| class == SUMMER)
     );
 
@@ -294,22 +295,56 @@ fn process(job: &Job, setup: &Setup) -> Result<String, String> {
     let started = std::time::Instant::now();
     let elevation = geotiff::read_f32(&job.dtm, DTM_SIZE_PX)?;
     let surface = geotiff::read_f32(&job.dom, DTM_SIZE_PX)?;
-    // Where no tent can go whatever the slope: the map's no-go areas, and
-    // wherever something stands on the ground. The mask covers the same
-    // pixels as the terrain: tile + border.
+    // Where no tent can go whatever the slope, per season. The masks cover
+    // the same pixels as the terrain: tile + border.
     let (west, _, _, north) = bordered_box(job.east, job.north);
     let mask = |what: &str, keep: &dyn Fn(&str) -> bool| {
         let mask = setup.no_go.mask(west, north, DTM_SIZE_PX, keep);
         mask.map_err(|e| format!("{}: {what} mask: {e}", job.name))
     };
-    let mut blocked = mask("no-go", &|class| class != SUMMER)?;
-    mark_obstacles(&mut blocked, &elevation, &surface, setup.args.max_object_height_m);
-    // Water the map draws in the wrong place: low ground right by it, and
-    // unnaturally smooth ground (interpolated over water).
+    let seasonal = [WATER, LAKE, NEAR_STREAM, SUMMER];
     let water = mask("water", &|class| class == WATER)?;
+    let lakes = mask("lakes", &|class| class == LAKE)?;
+    let bogs = mask("bogs", &|class| class == SUMMER)?;
+    let len = water.len();
+    let has_lakes = lakes.iter().any(|&l| l != 0);
+
+    // Both seasons: the map's no-go areas (any class not handled below, so a
+    // new one blocks), water, and low ground right by water, which the map
+    // may draw in the wrong place.
+    let mut all_year = mask("no-go", &|class| !seasonal.contains(&class))?;
+    for (b, &w) in all_year.iter_mut().zip(&water) {
+        *b |= w;
+    }
     let min_height = setup.args.min_height_above_water_m;
-    mark_low_shore(&mut blocked, &elevation, &water, WATER_REACH_M, min_height);
-    mark_smooth(&mut blocked, &elevation, MAX_SMOOTH_RESIDUAL_M);
+    mark_low_shore(&mut all_year, &elevation, &water, WATER_REACH_M, min_height);
+    // Whatever stands on the ground, and unnaturally smooth ground:
+    // interpolated or flattened over water.
+    let mut obstacles = vec![0; len];
+    mark_obstacles(&mut obstacles, &elevation, &surface, setup.args.max_object_height_m);
+    let mut smooth = vec![0; len];
+    mark_smooth(&mut smooth, &elevation, MAX_SMOOTH_RESIDUAL_M);
+
+    let mut summer = all_year.clone();
+    if has_lakes {
+        mark_low_shore(&mut summer, &elevation, &lakes, WATER_REACH_M, min_height);
+    }
+    // Only lakes need it: skip the big stream buffers on tiles without one.
+    let near_streams = if has_lakes {
+        mask("near streams", &|class| class == NEAR_STREAM)?
+    } else {
+        vec![0; len]
+    };
+    let mut winter = all_year;
+    for i in 0..len {
+        // Summer: also lakes, bogs, smooth ground and whatever stands on it.
+        summer[i] |= lakes[i] | bogs[i] | smooth[i] | obstacles[i];
+        // Winter: snow covers the bogs, and a frozen natural lake is a place
+        // for a tent, except near streams, whose current keeps the ice thin.
+        // On the lake, lidar sees no surface to find obstacles in (islands
+        // aren't part of it), and the ice is smooth on purpose.
+        winter[i] |= if lakes[i] != 0 { near_streams[i] } else { smooth[i] | obstacles[i] };
+    }
 
     let out_dir = setup.args.data.join("flatness").join(&job.name);
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
@@ -325,16 +360,10 @@ fn process(job: &Job, setup: &Setup) -> Result<String, String> {
     if job.needs_elevation {
         geotiff::write_f32(&out_dir.join(ELEVATION_FILE), n, n, &cell_heights, &at)?;
     }
-    // In summer, also what snow covers in winter.
-    let summer_only = mask("summer no-go", &|class| class == SUMMER)?;
-    let mut summer_blocked = blocked.clone();
-    for (b, &s) in summer_blocked.iter_mut().zip(&summer_only) {
-        *b |= s;
-    }
     let roughness = setup.args.max_roughness_m;
     let seasons = [
-        (SUMMER, pixel_cost(&elevation, &summer_blocked, roughness)),
-        (WINTER, pixel_cost(&elevation, &blocked, roughness)),
+        (SUMMER, pixel_cost(&elevation, &summer, roughness)),
+        (WINTER, pixel_cost(&elevation, &winter, roughness)),
     ];
 
     for &t in &job.tents {
@@ -372,11 +401,17 @@ fn done_path(out_dir: &Path, tent: &Tent) -> PathBuf {
 }
 
 /// Results come in two seasons: in winter, snow covers the no-go polygons
-/// of class "summer" (bogs). Classes are set in prepare_no_go.sh.
+/// of class "summer" (bogs), and natural lakes are frozen. Classes are set
+/// in prepare_no_go.sh.
 const SUMMER: &str = "summer";
 const WINTER: &str = "winter";
-/// The no-go class of lakes, rivers and sea.
+/// The no-go class of rivers, sea and regulated lakes, in both seasons.
 const WATER: &str = "water";
+/// Natural lakes: no-go in summer, frozen ground in winter.
+const LAKE: &str = "lake";
+/// Around streams and rivers, where lake ice is thin: no-go on lakes in
+/// winter.
+const NEAR_STREAM: &str = "near_stream";
 /// How far from the water `mark_low_shore` looks for its level, in pixels
 /// (metres): a few times N50's shoreline error.
 const WATER_REACH_M: usize = 30;
@@ -386,7 +421,7 @@ const MAX_SMOOTH_RESIDUAL_M: f32 = 0.001;
 /// The version of the results. Change it when they're computed differently
 /// or a file the next steps read changes (not when an output is dropped): it
 /// makes every tile count as not done, so they're all redone.
-const OUTPUT_FORMAT: u32 = 4;
+const OUTPUT_FORMAT: u32 = 5;
 
 fn settings_used(footprint: &Footprint, setup: &Setup) -> String {
     let args = &setup.args;

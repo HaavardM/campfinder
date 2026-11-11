@@ -42,14 +42,6 @@ pub fn pixel_cost(elevation: &Grid, blocked: &[u8], max_roughness_m: f32) -> Gri
                 continue; // missing data
             }
 
-            // Water the N50 mask misses: some lakes are flattened to one exact
-            // height in Kartverket's terrain model, so all nine values are
-            // identical. Real ground, interpolated from lidar points, never
-            // is. (Not every lake is flattened, hence the mask.)
-            if neighbourhood.iter().all(|&v| v == e) {
-                continue;
-            }
-
             // Roughness: how far the centre sits above or below the average of
             // its neighbourhood. On any tilted plane this is zero, so it picks
             // out bumps (hummocks, rocks, ditches) without punishing slope.
@@ -132,7 +124,8 @@ pub fn mark_low_shore(
 /// terrain model is interpolated between the shores: planes that real
 /// ground, measured point by point, is never that close to (measured on
 /// flat ground: under 1 mm in fewer than 1 in 1000 pixels; on N50 water:
-/// 42%). This also finds ponds the map doesn't have.
+/// 42%). This also finds ponds the map doesn't have, and lakes the terrain
+/// model flattens to one exact height.
 ///
 /// The best-fitting plane is cheap here: over a square window centred on
 /// the pixel, the constant, the x and the y terms don't interact, so each is
@@ -201,9 +194,11 @@ mod tests {
     }
 
     #[test]
-    fn a_flattened_lake_is_unusable() {
-        let cost = pixel_cost(&Grid::filled(10, 10, 853.9), &NOTHING_BLOCKED, 0.1);
-        assert!(cost.data.iter().all(|v| *v == f32::INFINITY));
+    fn a_flattened_lake_is_smooth() {
+        // Some lakes are flattened to one exact height in the terrain model.
+        let mut blocked = NOTHING_BLOCKED;
+        mark_smooth(&mut blocked, &Grid::filled(10, 10, 853.9), 0.001);
+        assert_eq!(blocked[5 * 10 + 5], 1);
     }
 
     #[test]
