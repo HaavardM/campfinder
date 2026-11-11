@@ -37,8 +37,25 @@ Once, in the Cloudflare dashboard:
 3. Optional, to keep the site private: Zero Trust → Access → add an
    application for the site's domain.
 
-Then every push builds and deploys the site. After a pipeline run, upload
-the map files (log in once first with `cd web && npx wrangler login`):
+Then every push builds and deploys the site. The map files go up with
+[rclone](https://rclone.org) (`brew install rclone`), through R2's S3 API:
+wrangler can't upload files over 300 MiB. Once, give rclone access to the
+bucket:
+
+1. R2 → Manage API tokens → Create API token: "Object Read & Write",
+   applied to the `campfinder-map` bucket only. Note the Access Key ID,
+   the Secret Access Key, and the S3 endpoint
+   (`https://<account id>.r2.cloudflarestorage.com`).
+2. Make an rclone remote named `r2` with them (`no_check_bucket`: the token
+   may only use the bucket, not check or create it):
+
+   ```sh
+   rclone config create r2 s3 provider=Cloudflare \
+     access_key_id=<key id> secret_access_key=<secret> \
+     endpoint=https://<account id>.r2.cloudflarestorage.com no_check_bucket=true
+   ```
+
+After each pipeline run, upload the map files:
 
 ```sh
 cd pipeline && ./publish.sh
