@@ -36,9 +36,9 @@ Downloaded tiles are stored compressed without loss, about 7.5 MB instead of
 compressed in place, safely next to a running pipeline:
 `(cd flatness && cargo run --release --example compress_tiles -- ../data/dtm ../data/dom)`.
 
-Kartverket leaves out the parts of a tile it has no data for (sea, and
-Sweden in the surface model); they're read as missing data. Before that,
-they came out as garbage heights in tiles along the coast and the border.
+Kartverket leaves out the parts of a tile it has no data for (sea, lakes
+in the surface model, and Sweden); they're read as missing data. Before
+that, they came out as zeros or garbage heights.
 To find those and have the next run fetch them again:
 `(cd flatness && cargo run --release --example find_garbled_tiles -- ../data --delete)`.
 
@@ -68,7 +68,7 @@ data/
     E0220000_N6864000/         results for one tile, 200 × 200 cells of 10 m
       elevation.tif            mean elevation per cell
       gamme-8-pc.summer.slope.tif   best (lowest) max-slope of a placement in the cell, degrees
-      keron-4-gt.winter.slope.tif   the same in winter (bogs allowed)
+      keron-4-gt.winter.slope.tif   the same in winter (bogs and lakes allowed)
       keron-4-gt.summer.heading.tif compass bearing of that placement's long side
       keron-4-gt.done               marks the tent done (both seasons), with the settings used
     keron-4-gt.summer.slope.vrt     mosaic of all tiles, for QGIS
@@ -174,6 +174,10 @@ cd .. && ./scaling.sh   # same tiles at 1, 2, 4, … threads: where does it stop
   detailed FKB maps need a Norge digitalt licence.)
 - **Bog is excluded in summer only**: the winter results treat it as ground
   under snow.
+- **Natural lakes are allowed in winter**, frozen, except within 100 m of a
+  stream or river, where the current keeps the ice thin. Regulated lakes
+  (reservoirs), rivers and sea stay out: their ice is treacherous. The
+  results know nothing about this winter's ice: check it on the spot.
 - **Buildings by type:** the 150 m rule covers houses, cabins, summer farms
   and mountain huts (types 111–179), not barns, garages or tourist huts.
 - **Angled headings are slightly conservative** (about 1 m) because of how
