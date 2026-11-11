@@ -118,10 +118,14 @@ for region in "$@"; do
       mv "$zip.part" "$zip"
     fi
     # GDAL reads straight from the zip (/vsizip/). -append adds this
-    # county's objects to the layers of the previous ones.
+    # county's objects to the layers of the previous ones. ONLY_CCW: tell
+    # holes (islands) from outer rings by their direction, as Esri's format
+    # defines them, instead of comparing every ring with every other, which
+    # is slow for the sea around thousands of islands. Same result.
     for ((i = 0; i < ${#COPIES[@]}; i += 2)); do
       ogr2ogr -f GPKG -append "$copy" "/vsizip/$zip/$source_name.gdb" "${COPIES[i]}" \
-        -where "${COPIES[i + 1]}" -spat "${box[@]}" -nln "${COPIES[i]}" -lco GEOMETRY_NAME=geom
+        -where "${COPIES[i + 1]}" -spat "${box[@]}" -nln "${COPIES[i]}" -lco GEOMETRY_NAME=geom \
+        --config OGR_ORGANIZE_POLYGONS ONLY_CCW
     done
   done
 
