@@ -64,6 +64,8 @@ data/
   no-go/rondane.recipe         fingerprint of the queries that made it
   dtm/E0220000_N6864000.tif    terrain, 2016 × 2016 px of 1 m (tile + 8 m border)
   dom/E0220000_N6864000.tif    surface (treetops, bushes, roofs), same pixels
+  dtm/E0046000_N6808000.no-land  no land here (all sea on the N50 map, or an
+                               empty reply from Kartverket): tile skipped
   flatness/
     E0220000_N6864000/         results for one tile, 200 × 200 cells of 10 m
       elevation.tif            mean elevation per cell

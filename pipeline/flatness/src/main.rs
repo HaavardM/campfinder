@@ -33,7 +33,7 @@ use flatness::tile::{
     bordered_box, cell_elevation, summarise,
 };
 use progress::{Progress, minutes_seconds};
-use rayon::iter::{ParallelBridge, ParallelIterator};
+use rayon::prelude::*;
 
 const USAGE: &str = "usage: flatness [--tents tents.toml] [--data data] [--threads N] \
                      [--downloads 8] [--max-roughness-m 0.1] [--max-object-height-m 0.5] \
@@ -88,8 +88,11 @@ fn main() {
     let mut on_disk = Vec::new();
     let mut to_download = VecDeque::new();
     let mut done = 0;
-    for &(east, north) in &setup.tiles {
-        match plan(&setup, east, north) {
+    // In parallel: planning a tile can mean drawing its sea mask.
+    let plans: Vec<Option<Job>> =
+        setup.tiles.par_iter().map(|&(east, north)| plan(&setup, east, north)).collect();
+    for plan in plans {
+        match plan {
             None => done += 1,
             Some(job) if job.dtm.exists() && job.dom.exists() => on_disk.push(job),
             Some(job) => to_download.push_back(job),
@@ -264,8 +267,14 @@ fn download_missing(job: &Job) -> Result<String, String> {
 fn plan(setup: &Setup, east: u32, north: u32) -> Option<Job> {
     let name = tile_name(east, north);
     let dtm = setup.args.data.join(Model::Terrain.dir()).join(format!("{name}.tif"));
-    if download::no_land_marker(&dtm).exists() {
+    let no_land = download::no_land_marker(&dtm);
+    if no_land.exists() {
         return None; // nothing to compute: no land
+    }
+    // All sea on the map, border included: no land, so no need to ask
+    // Kartverket, whose every reply takes seconds, even an empty one.
+    if !dtm.exists() && all_sea(setup, east, north) && std::fs::write(&no_land, "").is_ok() {
+        return None;
     }
     let out_dir = setup.args.data.join("flatness").join(&name);
     let tents: Vec<usize> = (0..setup.config.tents.len())
@@ -297,6 +306,24 @@ fn plan(setup: &Setup, east: u32, north: u32) -> Option<Job> {
     })
 }
 
+/// A no-go mask for a tile and its border, the same pixels as its terrain:
+/// 1 where a polygon whose class and N50 kind pass `keep` touches.
+fn tile_mask(
+    setup: &Setup,
+    east: u32,
+    north: u32,
+    keep: impl Fn(&str, &str) -> bool,
+) -> Result<Vec<u8>, String> {
+    let (west, _, _, north) = bordered_box(east, north);
+    setup.no_go.mask(west, north, DTM_SIZE_PX, keep)
+}
+
+/// Is the tile, border included, all sea on the N50 map?
+fn all_sea(setup: &Setup, east: u32, north: u32) -> bool {
+    let sea = tile_mask(setup, east, north, |_, kind| kind == SEA);
+    sea.is_ok_and(|sea| sea.iter().all(|&s| s != 0))
+}
+
 /// Processes one tile and returns a one-line report of how it went.
 fn process(job: &Job, setup: &Setup) -> Result<String, String> {
     if download::no_land_marker(&job.dtm).exists() {
@@ -305,11 +332,9 @@ fn process(job: &Job, setup: &Setup) -> Result<String, String> {
     let started = std::time::Instant::now();
     let elevation = geotiff::read_f32(&job.dtm, DTM_SIZE_PX)?;
     let surface = geotiff::read_f32(&job.dom, DTM_SIZE_PX)?;
-    // Where no tent can go whatever the slope, per season. The masks cover
-    // the same pixels as the terrain: tile + border.
-    let (west, _, _, north) = bordered_box(job.east, job.north);
+    // Where no tent can go whatever the slope, per season, by class.
     let mask = |what: &str, keep: &dyn Fn(&str) -> bool| {
-        let mask = setup.no_go.mask(west, north, DTM_SIZE_PX, keep);
+        let mask = tile_mask(setup, job.east, job.north, |class, _| keep(class));
         mask.map_err(|e| format!("{}: {what} mask: {e}", job.name))
     };
     let seasonal = [WATER, LAKE, NEAR_STREAM, SUMMER];
@@ -417,6 +442,8 @@ const SUMMER: &str = "summer";
 const WINTER: &str = "winter";
 /// The no-go class of rivers, sea and regulated lakes, in both seasons.
 const WATER: &str = "water";
+/// N50's object type for the sea: a tile of nothing else has no land.
+const SEA: &str = "Havflate";
 /// Natural lakes: no-go in summer, frozen ground in winter.
 const LAKE: &str = "lake";
 /// Around streams and rivers, where lake ice is thin: no-go on lakes in

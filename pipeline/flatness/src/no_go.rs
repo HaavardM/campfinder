@@ -20,6 +20,8 @@ pub struct NoGo {
     /// Each polygon's class: "water", "lake", "near_stream", "summer" or
     /// "always" (see prepare_no_go.sh).
     classes: Vec<String>,
+    /// Each polygon's N50 object type ("kind"), such as "Havflate" (sea).
+    kinds: Vec<String>,
     /// Each polygon's bounding box, so a tile can find the polygons near it
     /// with a few comparisons instead of looking at their shapes.
     boxes: Vec<BBox>,
@@ -30,18 +32,23 @@ impl NoGo {
     /// Loads the polygons from the given GeoPackages (one per region, made by
     /// `prepare_no_go.sh`, which already cuts them to the region).
     pub fn load(gpkgs: &[impl AsRef<Path>]) -> Result<NoGo, String> {
-        let (mut polygons, mut classes, mut boxes) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut polygons, mut classes, mut kinds, mut boxes) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for gpkg in gpkgs {
             let path = gpkg.as_ref().display().to_string();
             let dataset = terrio::open_vector(&path, &Default::default())
                 .map_err(|e| format!("{path}: {e}"))?;
             for layer in dataset.layers {
                 for polygon in layer.features {
-                    let class = polygon.get(&layer.schema, "class").ok().and_then(|v| v.as_str());
-                    let class = class.unwrap_or_default().to_string();
+                    let text = |field| {
+                        let value = polygon.get(&layer.schema, field).ok().and_then(|v| v.as_str());
+                        value.unwrap_or_default().to_string()
+                    };
+                    let (class, kind) = (text("class"), text("kind"));
                     if let Some(b) = polygon.geometry.as_ref().and_then(|g| g.bbox()) {
                         polygons.push(polygon);
                         classes.push(class);
+                        kinds.push(kind);
                         boxes.push(b);
                     }
                 }
@@ -50,6 +57,7 @@ impl NoGo {
         Ok(NoGo {
             polygons,
             classes,
+            kinds,
             boxes,
             utm33: SpatialRef::from_epsg(25833).map_err(|e| e.to_string())?,
         })
@@ -61,19 +69,19 @@ impl NoGo {
     }
 
     /// A `size` × `size` grid of 1 m pixels with its top-left corner at
-    /// (west, north) in EPSG:25833: 1 where a no-go polygon whose class
-    /// passes `keep` touches the pixel, 0 elsewhere.
+    /// (west, north) in EPSG:25833: 1 where a no-go polygon whose class and
+    /// kind pass `keep` touches the pixel, 0 elsewhere.
     pub fn mask(
         &self,
         west: f64,
         north: f64,
         size: usize,
-        keep: impl Fn(&str) -> bool,
+        keep: impl Fn(&str, &str) -> bool,
     ) -> Result<Vec<u8>, String> {
         let tile = (west, north - size as f64, west + size as f64, north);
         let mut near = Layer::new("no_go");
         near.features = (0..self.polygons.len())
-            .filter(|&i| keep(&self.classes[i]) && overlaps(&self.boxes[i], tile))
+            .filter(|&i| keep(&self.classes[i], &self.kinds[i]) && overlaps(&self.boxes[i], tile))
             .map(|i| self.polygons[i].clone())
             .collect();
 
