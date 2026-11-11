@@ -55,10 +55,14 @@ bucket:
      endpoint=https://<account id>.r2.cloudflarestorage.com no_check_bucket=true
    ```
 
-After each pipeline run, upload the map files:
+After each pipeline run, upload the map files, then delete the older
+versions the new manifest no longer names (they count towards the free
+10 GB):
 
 ```sh
 cd pipeline && ./publish.sh
+./prune.sh            # lists what would be deleted
+./prune.sh --delete
 ```
 
 [publish.sh](pipeline/publish.sh) uploads the `.pmtiles` files first and

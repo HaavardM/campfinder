@@ -10,8 +10,8 @@
 # The .pmtiles files go first and manifest.json last, so the manifest never
 # names a file that isn't there yet. A .pmtiles name holds a hash of its
 # content, so one already in the bucket is skipped. Older .pmtiles files
-# stay, so browsers with the previous manifest still work; delete them by
-# hand now and then.
+# stay, so browsers with the previous manifest still work; ./prune.sh
+# deletes them.
 #
 # Usage: ./publish.sh
 #   Set up once: an rclone remote named "r2" for the bucket (see README).
