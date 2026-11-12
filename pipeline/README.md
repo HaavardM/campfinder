@@ -138,8 +138,12 @@ For each tile, the engine ([flatness/](flatness/), Rust):
      window sizes (≤ 12 px) the simple version measured 2–6× faster.
 3. **Rotated tents** ([rotate.rs](flatness/src/rotate.rs)): rotate the terrain
    instead of the tent, then use the same rectangle filter. One rotation covers
-   two headings 90° apart, so 12 headings need 6 rotations. Round tents are a
-   union of rectangles: the max over a union is the max of each part's max.
+   two headings 90° apart, so 12 headings need 6 rotations (5: 0° needs
+   none). A rotated pixel is the max of the 2 × 2 pixels around its sample
+   point, so no rock falls between samples. Those maxima are one rectangle
+   filter up front, which leaves one lookup per rotated pixel. Round tents
+   are a union of rectangles: the max over a union is the max of each
+   part's max.
 4. **Summarise** ([tile.rs](flatness/src/tile.rs)): each 10 m cell keeps its
    best placement and heading.
 

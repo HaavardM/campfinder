@@ -49,12 +49,15 @@ const HEADING_STEP_DEG: usize = 15;
 
 /// For every pixel: the lowest "steepest slope under the tent" over all
 /// placements centred on that pixel, in tenths of a degree, and the heading
-/// of that placement (compass bearing of the tent's long side, 0–165°; -1
-/// for round tents). `UNUSABLE` means no placement fits.
+/// of that placement (compass bearing of the tent's long side, 0–165°;
+/// `NO_HEADING` for round tents). `UNUSABLE` means no placement fits.
 pub struct Placement {
     pub max_slope: Grid<u8>,
-    pub heading: Vec<i16>,
+    pub heading: Vec<u8>,
 }
+
+/// The heading of a round tent, or of no placement.
+const NO_HEADING: u8 = u8::MAX;
 
 pub fn best_placement(cost: &Grid<u8>, footprint: &Footprint) -> Placement {
     match footprint {
@@ -64,36 +67,40 @@ pub fn best_placement(cost: &Grid<u8>, footprint: &Footprint) -> Placement {
             for &(width, height) in rectangles {
                 max_into(&mut max_slope.data, &rect_max(cost, width, height).data);
             }
-            let heading = vec![-1; cost.data.len()];
+            let heading = vec![NO_HEADING; cost.data.len()];
             Placement { max_slope, heading }
         }
         Footprint::Rectangle { width, length } => {
             let mut best = Placement {
                 max_slope: Grid::filled(cost.width, cost.height, UNUSABLE),
-                heading: vec![-1; cost.data.len()],
+                heading: vec![NO_HEADING; cost.data.len()],
             };
             // In the rotated frame, the W×L and L×W filters are two headings
-            // 90° apart, so 6 rotations cover all 12 headings.
+            // 90° apart, so 6 rotations cover all 12 headings. At 0° the
+            // frame is the tile's own: nothing to rotate.
             for angle in (0..90).step_by(HEADING_STEP_DEG) {
-                let rotated = rotate(cost, angle as f32);
-                // Long side along the rotated rows (u): compass bearing 90 + angle.
-                // Long side along the rotated columns (v): bearing angle.
-                for (u_len, v_len, bearing) in
-                    [(*length, *width, 90 + angle), (*width, *length, angle)]
-                {
-                    let filtered = rect_max(&rotated, u_len, v_len);
-                    unrotate_each(
-                        &filtered,
-                        angle as f32,
-                        cost.width,
-                        cost.height,
-                        |i, slope| {
-                            if slope < best.max_slope.data[i] {
-                                best.max_slope.data[i] = slope;
-                                best.heading[i] = bearing as i16;
-                            }
-                        },
-                    );
+                let rotated = (angle > 0).then(|| rotate(cost, angle as f32));
+                let frame = rotated.as_ref().unwrap_or(cost);
+                // Long side along the rows (u): compass bearing 90 + angle.
+                // Long side along the columns (v): bearing angle.
+                let along_u = rect_max(frame, *length, *width);
+                let along_v = rect_max(frame, *width, *length);
+                let mut keep = |i: usize, j: usize| {
+                    let (slope, bearing) = if along_u.data[j] <= along_v.data[j] {
+                        (along_u.data[j], 90 + angle)
+                    } else {
+                        (along_v.data[j], angle)
+                    };
+                    if slope < best.max_slope.data[i] {
+                        best.max_slope.data[i] = slope;
+                        best.heading[i] = bearing as u8;
+                    }
+                };
+                if angle == 0 {
+                    (0..cost.data.len()).for_each(|i| keep(i, i));
+                } else {
+                    let (w, h) = (cost.width, cost.height);
+                    unrotate_each(frame.width, frame.height, angle as f32, w, h, keep);
                 }
             }
             best
@@ -121,7 +128,7 @@ pub fn summarise(placement: &Placement) -> CellResult {
     for cell_y in 0..CELLS_PER_SIDE {
         for cell_x in 0..CELLS_PER_SIDE {
             let mut best = UNUSABLE;
-            let mut best_heading = -1;
+            let mut best_heading = NO_HEADING;
             for y in 0..CELL_SIZE_M {
                 for x in 0..CELL_SIZE_M {
                     let px = BUFFER_M + cell_x * CELL_SIZE_M + x;
@@ -136,7 +143,9 @@ pub fn summarise(placement: &Placement) -> CellResult {
             let cell = cell_y * CELLS_PER_SIDE + cell_x;
             if best != UNUSABLE {
                 result.max_slope[cell] = best as f32 / 10.0;
-                result.heading[cell] = best_heading;
+                if best_heading != NO_HEADING {
+                    result.heading[cell] = best_heading as i16;
+                }
             }
         }
     }
@@ -199,7 +208,7 @@ mod tests {
             let centre = 20 * 41 + 20;
             assert_eq!(placement.max_slope.data[centre], 10, "bearing {bearing}");
             assert_eq!(
-                placement.heading[centre], bearing as i16,
+                placement.heading[centre], bearing as u8,
                 "bearing {bearing}"
             );
         }
