@@ -56,12 +56,32 @@ fn rows_max<T: Copy + PartialOrd>(grid: &Grid<T>, window: usize, outside: T) -> 
 
 fn columns_max<T: Copy + PartialOrd>(grid: &Grid<T>, window: usize, outside: T) -> Grid<T> {
     let before = (window - 1) / 2;
-    // The grid with rows of `outside` above and below it.
-    let mut padded = vec![outside; (grid.height + window - 1) * grid.width];
-    padded[before * grid.width..][..grid.data.len()].copy_from_slice(&grid.data);
-    let (mut spare, mut out) = (Vec::new(), Vec::with_capacity(grid.data.len()));
-    let count = grid.data.len();
-    window_max(&mut padded, &mut spare, grid.width, window, count, &mut out);
+    // In strips a cache line (64 bytes) wide: a strip and all its rounds of
+    // `window_max` stay in the CPU's cache. Over the whole grid at once,
+    // every round went out to memory and back, which with all cores busy
+    // made this pass wait on memory.
+    let strip = (64 / size_of::<T>()).max(1);
+    let mut out = vec![outside; grid.data.len()];
+    let (mut padded, mut spare, mut result) = (Vec::new(), Vec::new(), Vec::new());
+    for left in (0..grid.width).step_by(strip) {
+        let columns = strip.min(grid.width - left);
+        // The strip with rows of `outside` above and below it.
+        padded.clear();
+        padded.resize(before * columns, outside);
+        for row in grid.data.chunks_exact(grid.width) {
+            padded.extend_from_slice(&row[left..left + columns]);
+        }
+        padded.resize((grid.height + window - 1) * columns, outside);
+        result.clear();
+        let count = grid.height * columns;
+        window_max(&mut padded, &mut spare, columns, window, count, &mut result);
+        for (row, values) in out
+            .chunks_exact_mut(grid.width)
+            .zip(result.chunks_exact(columns))
+        {
+            row[left..left + columns].copy_from_slice(values);
+        }
+    }
     Grid {
         width: grid.width,
         height: grid.height,
