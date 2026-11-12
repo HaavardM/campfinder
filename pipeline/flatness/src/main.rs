@@ -27,7 +27,7 @@ use flatness::geotiff::{self, Georef, write_atomic};
 use flatness::no_go::NoGo;
 use flatness::region::{Region, tile_name};
 use flatness::tents::{Footprint, Shape, Tent, TentsFile};
-use flatness::terrain::{mark_low_shore, mark_obstacles, mark_smooth, pixel_cost};
+use flatness::terrain::{mark_low_shore, mark_obstacles, mark_smooth, pixel_cost, slope_tenths};
 use flatness::tile::{
     BUFFER_M, CELL_SIZE_M, CELLS_PER_SIDE, DTM_SIZE_PX, TILE_SIZE_M, best_placement,
     bordered_box, cell_elevation, summarise,
@@ -395,10 +395,10 @@ fn process(job: &Job, setup: &Setup) -> Result<String, String> {
     if job.needs_elevation {
         geotiff::write_f32(&out_dir.join(ELEVATION_FILE), n, n, &cell_heights, &at)?;
     }
-    let roughness = setup.args.max_roughness_m;
+    let slope = slope_tenths(&elevation, setup.args.max_roughness_m);
     let seasons = [
-        (SUMMER, pixel_cost(&elevation, &summer, roughness)),
-        (WINTER, pixel_cost(&elevation, &winter, roughness)),
+        (SUMMER, pixel_cost(&slope, &summer)),
+        (WINTER, pixel_cost(&slope, &winter)),
     ];
 
     for &t in &job.tents {

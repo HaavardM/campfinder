@@ -7,8 +7,8 @@
 //!    `no_go::NoGo::mask` and `terrain::mark_obstacles`: which of its
 //!    pixels are no-go (water, bogs, near houses; from N50) or have
 //!    something standing on them (bushes, trees; from the surface model).
-//! 2. `terrain::pixel_cost`: slope per pixel, in tenths of a degree in one
-//!    byte; `UNUSABLE` where a tent can't stand.
+//! 2. `terrain::slope_tenths`, `terrain::pixel_cost`: slope per pixel, in
+//!    tenths of a degree in one byte; `UNUSABLE` where a tent can't stand.
 //! 3. `tile::best_placement`: steepest pixel under each tent placement, best
 //!    heading per pixel (`sliding_max` and `rotate` do the heavy lifting).
 //! 4. `tile::summarise`: best placement per 10 m cell, written as GeoTIFF.
