@@ -12,27 +12,15 @@ use crate::sliding_max::rect_max_outside;
 /// result as the other way round, so nothing the map shows changes.
 pub const UNUSABLE: u8 = u8::MAX;
 
-/// Cost of each 1 m pixel of the terrain model:
-///
-/// - slope in tenths of a degree, if the pixel is usable;
-/// - `UNUSABLE` for rough ground, blocked pixels, missing data, the
-///   outermost pixels (which lack a full neighbourhood) and slopes of 25.5°
-///   or more (no tent goes there anyway).
-///
-/// Making unusable pixels the steepest possible means a single sliding max of
-/// this grid answers both questions for a tent footprint: how steep is it,
-/// and is anything under it unusable?
-///
-/// `blocked` is a mask on the same pixel grid: non-zero where a tent can't
-/// go whatever the slope (water, bogs, bushes, …).
-pub fn pixel_cost(elevation: &Grid, blocked: &[u8], max_roughness_m: f32) -> Grid<u8> {
-    assert_eq!(blocked.len(), elevation.data.len());
-    let mut cost = Grid::filled(elevation.width, elevation.height, UNUSABLE);
+/// Slope of each 1 m pixel of the terrain model, in tenths of a degree;
+/// `UNUSABLE` for rough ground, missing data, the outermost pixels (which
+/// lack a full neighbourhood) and slopes of 25.5° or more (no tent goes
+/// there anyway). The same in both seasons: `pixel_cost` adds what's
+/// blocked in each.
+pub fn slope_tenths(elevation: &Grid, max_roughness_m: f32) -> Grid<u8> {
+    let mut slope = Grid::filled(elevation.width, elevation.height, UNUSABLE);
     for y in 1..elevation.height - 1 {
         for x in 1..elevation.width - 1 {
-            if blocked[y * elevation.width + x] != 0 {
-                continue;
-            }
             // The 3×3 neighbourhood, named row by row:
             //   a b c
             //   d e f
@@ -67,10 +55,29 @@ pub fn pixel_cost(elevation: &Grid, blocked: &[u8], max_roughness_m: f32) -> Gri
             let dz_dy = ((g + 2.0 * h + i) - (a + 2.0 * b + c)) / 8.0;
             let slope_deg = (dz_dx * dz_dx + dz_dy * dz_dy).sqrt().atan().to_degrees();
             // `as` saturates: 25.5° and steeper become UNUSABLE.
-            cost.set(x, y, (slope_deg * 10.0).ceil() as u8);
+            slope.set(x, y, (slope_deg * 10.0).ceil() as u8);
         }
     }
-    cost
+    slope
+}
+
+/// Cost of each pixel: its slope, or `UNUSABLE` where `blocked` (a mask on
+/// the same pixel grid) is non-zero: where a tent can't go whatever the
+/// slope (water, bogs, bushes, …).
+///
+/// Making unusable pixels the steepest possible means a single sliding max of
+/// this grid answers both questions for a tent footprint: how steep is it,
+/// and is anything under it unusable?
+pub fn pixel_cost(slope: &Grid<u8>, blocked: &[u8]) -> Grid<u8> {
+    assert_eq!(blocked.len(), slope.data.len());
+    let data = slope.data.iter().zip(blocked);
+    Grid {
+        width: slope.width,
+        height: slope.height,
+        data: data
+            .map(|(&s, &b)| if b != 0 { UNUSABLE } else { s })
+            .collect(),
+    }
 }
 
 /// Blocks the pixels where something stands on the ground higher than
@@ -193,7 +200,7 @@ mod tests {
     #[test]
     fn slope_of_a_plane() {
         let rise = 5f32.to_radians().tan(); // 5°
-        let cost = pixel_cost(&tilted_plane(10, rise), &NOTHING_BLOCKED, 0.1);
+        let cost = slope_tenths(&tilted_plane(10, rise), 0.1);
         // 5°, or a hair over it after rounding up.
         assert!((50..=51).contains(&cost.get(5, 5)), "{}", cost.get(5, 5));
         assert_eq!(cost.get(0, 5), UNUSABLE, "edge pixels are unusable");
@@ -203,7 +210,7 @@ mod tests {
     fn a_rock_is_unusable() {
         let mut elevation = tilted_plane(10, 0.02);
         elevation.set(5, 5, elevation.get(5, 5) + 0.4); // 40 cm rock
-        let cost = pixel_cost(&elevation, &NOTHING_BLOCKED, 0.1);
+        let cost = slope_tenths(&elevation, 0.1);
         assert_eq!(cost.get(5, 5), UNUSABLE);
         assert_ne!(cost.get(2, 2), UNUSABLE);
     }
@@ -220,7 +227,7 @@ mod tests {
     fn blocked_pixels_are_unusable() {
         let mut blocked = NOTHING_BLOCKED;
         blocked[5 * 10 + 5] = 1;
-        let cost = pixel_cost(&tilted_plane(10, 0.02), &blocked, 0.1);
+        let cost = pixel_cost(&slope_tenths(&tilted_plane(10, 0.02), 0.1), &blocked);
         assert_eq!(cost.get(5, 5), UNUSABLE);
         assert_ne!(cost.get(4, 5), UNUSABLE);
     }
@@ -286,7 +293,7 @@ mod tests {
     fn missing_data_is_unusable() {
         let mut elevation = tilted_plane(10, 0.02);
         elevation.set(5, 5, f32::NAN);
-        let cost = pixel_cost(&elevation, &NOTHING_BLOCKED, 0.1);
+        let cost = slope_tenths(&elevation, 0.1);
         assert_eq!(cost.get(4, 4), UNUSABLE);
         assert_ne!(cost.get(2, 2), UNUSABLE);
     }

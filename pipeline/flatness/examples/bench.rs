@@ -10,7 +10,7 @@ use flatness::geotiff::read_f32;
 use flatness::rotate::rotate;
 use flatness::sliding_max::{rect_max, rect_max_naive};
 use flatness::tents::Footprint;
-use flatness::terrain::pixel_cost;
+use flatness::terrain::slope_tenths;
 use flatness::tile::{DTM_SIZE_PX, best_placement};
 
 fn main() {
@@ -19,11 +19,10 @@ fn main() {
         .expect("usage: bench <terrain tile .tif>");
     let elevation = read_f32(Path::new(&path), DTM_SIZE_PX).unwrap();
     let megapixels = elevation.data.len() as f64 / 1e6;
-    let nothing_blocked = vec![0u8; elevation.data.len()];
     println!("{path}: {}×{} pixels\n", elevation.width, elevation.height);
 
-    let cost = time("pixel_cost (slope, roughness)", megapixels, || {
-        pixel_cost(&elevation, &nothing_blocked, 0.1)
+    let cost = time("slope_tenths (slope, roughness)", megapixels, || {
+        slope_tenths(&elevation, 0.1)
     });
 
     for (w, h) in [(3, 6), (6, 6), (12, 12), (24, 24)] {
