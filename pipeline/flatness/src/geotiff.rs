@@ -10,7 +10,7 @@
 //! That's all QGIS or GDAL needs to show the image in the right place.
 
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Cursor, Read, Seek};
 use std::path::Path;
 
 use tiff::decoder::{ChunkType, Decoder, DecodingResult};
@@ -30,7 +30,8 @@ use crate::grid::Grid;
 /// fills such pieces with garbage, or fails if all are missing.)
 pub fn read_f32(path: &Path, size: usize) -> Result<Grid, String> {
     let error = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
-    let mut decoder = open_f32(path, size)?;
+    let file = std::fs::read(path).map_err(|e| error(&e))?;
+    let mut decoder = open_f32(Cursor::new(&file[..]), path, size)?;
     let byte_counts = match decoder.get_chunk_type() {
         ChunkType::Tile => decoder.get_tag_u64_vec(Tag::TileByteCounts),
         ChunkType::Strip => decoder.get_tag_u64_vec(Tag::StripByteCounts),
@@ -39,6 +40,9 @@ pub fn read_f32(path: &Path, size: usize) -> Result<Grid, String> {
 
     // Every piece there (all our own files): read the image in one go.
     if byte_counts.iter().all(|&bytes| bytes > 0) {
+        if let Some(grid) = read_own_compressed(&mut decoder, &file, size).map_err(|e| error(&e))? {
+            return Ok(grid);
+        }
         return match decoder.read_image().map_err(|e| error(&e))? {
             DecodingResult::F32(data) => Ok(Grid {
                 width: size,
@@ -74,18 +78,85 @@ pub fn read_f32(path: &Path, size: usize) -> Result<Grid, String> {
     Ok(grid)
 }
 
+/// Reads the tiles `write_f32_compressed` writes, which is every tile on
+/// disk, faster than the tiff crate: libdeflate inflates the strips (about
+/// twice as fast as the zlib-rs the tiff crate uses), and undoing the
+/// predictor is two simple loops. About 30 ms instead of 80 per tile.
+/// `None` for any other kind of TIFF.
+fn read_own_compressed(
+    decoder: &mut Decoder<Cursor<&[u8]>>,
+    file: &[u8],
+    size: usize,
+) -> Result<Option<Grid>, String> {
+    let e = |e: tiff::TiffError| e.to_string();
+    // Compression 8 is deflate with a zlib header.
+    let ours = decoder.get_chunk_type() == ChunkType::Strip
+        && decoder.get_tag_u32(Tag::Compression).ok() == Some(8)
+        && decoder.get_tag_u32(Tag::Predictor).ok() == Some(3);
+    if !ours {
+        return Ok(None);
+    }
+    let offsets = decoder.get_tag_u64_vec(Tag::StripOffsets).map_err(e)?;
+    let byte_counts = decoder.get_tag_u64_vec(Tag::StripByteCounts).map_err(e)?;
+    let row_bytes = size * 4;
+    let strip_bytes = decoder.get_tag_u32(Tag::RowsPerStrip).map_err(e)? as usize * row_bytes;
+
+    let mut bytes = vec![0u8; size * row_bytes];
+    if offsets.len() != bytes.len().div_ceil(strip_bytes) {
+        return Err("unexpected number of strips".into());
+    }
+    let mut inflater = libdeflater::Decompressor::new();
+    for ((&offset, &count), strip) in offsets
+        .iter()
+        .zip(&byte_counts)
+        .zip(bytes.chunks_mut(strip_bytes))
+    {
+        let compressed = file
+            .get(offset as usize..(offset + count) as usize)
+            .ok_or("a strip reaches past the end of the file")?;
+        let inflated = inflater
+            .zlib_decompress(compressed, strip)
+            .map_err(|e| e.to_string())?;
+        if inflated != strip.len() {
+            return Err("a strip is too short".into());
+        }
+    }
+
+    // Undo the predictor (see `write_f32_compressed`) row by row: add each
+    // byte to the one before, then take each float's 4 bytes from the 4
+    // runs of bytes.
+    let mut data = vec![0f32; size * size];
+    for (row, out) in bytes
+        .chunks_exact_mut(row_bytes)
+        .zip(data.chunks_exact_mut(size))
+    {
+        for i in 1..row.len() {
+            row[i] = row[i].wrapping_add(row[i - 1]);
+        }
+        for (x, value) in out.iter_mut().enumerate() {
+            let b = [row[x], row[size + x], row[2 * size + x], row[3 * size + x]];
+            *value = f32::from_be_bytes(b);
+        }
+    }
+    Ok(Some(Grid {
+        width: size,
+        height: size,
+        data,
+    }))
+}
+
 /// Is the elevation tile at `path` (as for `read_f32`) compressed? Reads
 /// only its header.
 pub fn is_compressed(path: &Path, size: usize) -> Result<bool, String> {
-    let mut decoder = open_f32(path, size)?;
+    let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut decoder = open_f32(BufReader::new(file), path, size)?;
     // Compression method 1 means none.
     Ok(decoder.get_tag_u32(Tag::Compression).unwrap_or(1) != 1)
 }
 
-fn open_f32(path: &Path, size: usize) -> Result<Decoder<BufReader<File>>, String> {
+fn open_f32<R: Read + Seek>(reader: R, path: &Path, size: usize) -> Result<Decoder<R>, String> {
     let error = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
-    let file = File::open(path).map_err(|e| error(&e))?;
-    let mut decoder = Decoder::new(BufReader::new(file)).map_err(|e| error(&e))?;
+    let mut decoder = Decoder::new(reader).map_err(|e| error(&e))?;
     let (width, height) = decoder.dimensions().map_err(|e| error(&e))?;
     if (width as usize, height as usize) != (size, size) {
         return Err(error(&format!(
@@ -149,13 +220,17 @@ pub fn write_f32_compressed(path: &Path, grid: &Grid, at: &Georef) -> Result<(),
     for row in grid.data.chunks(grid.width) {
         rows.extend(float_predictor(row));
     }
-    write(path, Compression::Deflate(DeflateLevel::Balanced), |encoder| {
-        let mut image =
-            encoder.new_image::<colortype::Gray32Float>(grid.width as u32, grid.height as u32)?;
-        write_geo_tags(image.encoder(), at, "nan")?;
-        image.encoder().write_tag(Tag::Predictor, 3u16)?; // floating point
-        image.write_data(&rows)
-    })
+    write(
+        path,
+        Compression::Deflate(DeflateLevel::Balanced),
+        |encoder| {
+            let mut image = encoder
+                .new_image::<colortype::Gray32Float>(grid.width as u32, grid.height as u32)?;
+            write_geo_tags(image.encoder(), at, "nan")?;
+            image.encoder().write_tag(Tag::Predictor, 3u16)?; // floating point
+            image.write_data(&rows)
+        },
+    )
 }
 
 /// One row through the floating-point predictor (see `write_f32_compressed`).
