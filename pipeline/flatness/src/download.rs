@@ -74,6 +74,9 @@ pub fn no_land_marker(dtm: &Path) -> PathBuf {
     dtm.with_extension("no-land")
 }
 
+/// A whole tile normally takes 8–15 s.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Streams an elevation tile from `url` into a temporary file, then stores it
 /// compressed at `path` (see `geotiff::write_f32_compressed`), placed at
 /// `at`. Kartverket sends tiles uncompressed. Retries a few times, waiting
@@ -87,7 +90,14 @@ fn download(url: &str, path: &Path, at: Georef, no_land_marker: Option<&Path>) -
     for wait_s in [0, 5, 20, 60] {
         std::thread::sleep(Duration::from_secs(wait_s));
         let attempt = || -> Result<u64, String> {
-            let mut response = ureq::get(url).call().map_err(|e| e.to_string())?;
+            // ureq waits forever by default, and a struggling server can
+            // accept a request and never answer it.
+            let mut response = ureq::get(url)
+                .config()
+                .timeout_global(Some(DOWNLOAD_TIMEOUT))
+                .build()
+                .call()
+                .map_err(|e| e.to_string())?;
             let mut file = std::fs::File::create(&part).map_err(|e| e.to_string())?;
             let bytes = std::io::copy(&mut response.body_mut().as_reader(), &mut file)
                 .map_err(|e| e.to_string())?;
