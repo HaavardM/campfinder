@@ -32,8 +32,9 @@ What `run.sh` does:
 
 Downloaded tiles are stored compressed without loss, about 7.5 MB instead of
 16.8 (deflate after TIFF's floating-point predictor; see
-[geotiff.rs](flatness/src/geotiff.rs)). Tiles downloaded before that can be
-compressed in place, safely next to a running pipeline:
+[geotiff.rs](flatness/src/geotiff.rs)), and read back with libdeflate in
+about 40 ms each. Tiles downloaded before that can be compressed in place,
+safely next to a running pipeline:
 `(cd flatness && cargo run --release --example compress_tiles -- ../data/dtm ../data/dom)`.
 
 Kartverket leaves out the parts of a tile it has no data for (sea, lakes
@@ -160,14 +161,16 @@ Measured on one thread of an Apple M-series Mac, one tile:
 
 | Step | ms |
 |---|---|
-| cost per pixel | 36 |
-| rectangle max 6 × 6 / 12 × 12 | 0.9 / 1.7 |
-| rectangle max 12 × 12, naive | 648 |
-| rotate 45° | 27 |
-| Keron, 12 headings | 247 |
+| reading terrain + surface | 78 |
+| slope per pixel | 34 |
+| rectangle max 6 × 6 / 12 × 12 | 1.0 / 1.7 |
+| rectangle max 12 × 12, naive | 573 |
+| rotate 45° | 17 |
+| Keron, 12 headings | 160 |
 | Gamme, round | 2 |
+| whole tile, both seasons and tents | 450 |
 
-All 90 tiles of `regions/test-known.env` take 7 s on the Mac's 10 threads.
+All 90 tiles of `regions/test-known.env` take 8 s on the Mac's 10 threads.
 
 Run natively, not in Docker: on the Mac, Docker Desktop's virtual machine made
 the memory-heavy filter loops 4–20× slower (the code was vectorised just the
