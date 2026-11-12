@@ -124,7 +124,8 @@ fn to_lon_lat() -> Transformer {
 }
 
 /// Every spot cell up to the largest limit, with its slope in tenths of a
-/// degree (rounded up: never flatter than it is). Tiles are read in parallel.
+/// degree, as the engine stores them (rounded up: never flatter than it is).
+/// Tiles are read in parallel.
 fn read_spots(tiles: &[Tile], tent: &str, season: &str) -> HashMap<Cell, u8> {
     let max_tenths = *LIMITS.last().unwrap() as f32 * 10.0;
     tiles
@@ -137,7 +138,9 @@ fn read_spots(tiles: &[Tile], tent: &str, season: &str) -> HashMap<Cell, u8> {
             let y_top = ((*north as usize + TILE_SIZE_M) / CELL_SIZE_M) as i32;
             grid.into_iter().flat_map(move |grid| {
                 (0..CELLS_PER_SIDE * CELLS_PER_SIDE).filter_map(move |i| {
-                    let tenths = (grid.data[i] * 10.0).ceil();
+                    // Whole tenths already: round away float error, as
+                    // 0.3 × 10 needn't be exactly 3.
+                    let tenths = (grid.data[i] * 10.0).round();
                     // NaN (nothing fits) fails this comparison too.
                     (tenths <= max_tenths).then(|| {
                         let (row, col) = (i / CELLS_PER_SIDE, i % CELLS_PER_SIDE);

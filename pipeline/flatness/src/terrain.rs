@@ -1,24 +1,33 @@
-//! From elevation to a per-pixel "cost": the ground slope in degrees where a
-//! tent could stand, and infinity where it can't.
+//! From elevation to a per-pixel "cost": the ground slope where a tent could
+//! stand, and `UNUSABLE` where it can't.
 
 use crate::grid::Grid;
 use crate::sliding_max::rect_max_outside;
 
+/// Slopes are stored in tenths of a degree, rounded up (never flatter than
+/// the ground is), in one byte: 0 to 25.4°. A byte instead of a float means
+/// a quarter of the memory traffic in the sliding max and the rotations,
+/// where most of a tile's time goes, and 4 × as many pixels per SIMD
+/// instruction. Rounding up first and taking the max after gives the same
+/// result as the other way round, so nothing the map shows changes.
+pub const UNUSABLE: u8 = u8::MAX;
+
 /// Cost of each 1 m pixel of the terrain model:
 ///
-/// - slope in degrees, if the pixel is usable;
-/// - infinity for rough ground, blocked pixels, missing data and the
-///   outermost pixels (which lack a full neighbourhood).
+/// - slope in tenths of a degree, if the pixel is usable;
+/// - `UNUSABLE` for rough ground, blocked pixels, missing data, the
+///   outermost pixels (which lack a full neighbourhood) and slopes of 25.5°
+///   or more (no tent goes there anyway).
 ///
-/// Making unusable pixels "infinitely steep" means a single sliding max of
+/// Making unusable pixels the steepest possible means a single sliding max of
 /// this grid answers both questions for a tent footprint: how steep is it,
 /// and is anything under it unusable?
 ///
 /// `blocked` is a mask on the same pixel grid: non-zero where a tent can't
 /// go whatever the slope (water, bogs, bushes, …).
-pub fn pixel_cost(elevation: &Grid, blocked: &[u8], max_roughness_m: f32) -> Grid {
+pub fn pixel_cost(elevation: &Grid, blocked: &[u8], max_roughness_m: f32) -> Grid<u8> {
     assert_eq!(blocked.len(), elevation.data.len());
-    let mut cost = Grid::filled(elevation.width, elevation.height, f32::INFINITY);
+    let mut cost = Grid::filled(elevation.width, elevation.height, UNUSABLE);
     for y in 1..elevation.height - 1 {
         for x in 1..elevation.width - 1 {
             if blocked[y * elevation.width + x] != 0 {
@@ -57,7 +66,8 @@ pub fn pixel_cost(elevation: &Grid, blocked: &[u8], max_roughness_m: f32) -> Gri
             let dz_dx = ((c + 2.0 * f + i) - (a + 2.0 * d + g)) / 8.0;
             let dz_dy = ((g + 2.0 * h + i) - (a + 2.0 * b + c)) / 8.0;
             let slope_deg = (dz_dx * dz_dx + dz_dy * dz_dy).sqrt().atan().to_degrees();
-            cost.set(x, y, slope_deg);
+            // `as` saturates: 25.5° and steeper become UNUSABLE.
+            cost.set(x, y, (slope_deg * 10.0).ceil() as u8);
         }
     }
     cost
@@ -109,7 +119,11 @@ pub fn mark_low_shore(
     }
     let window = 2 * reach_px + 1;
     let lowest_water = rect_max_outside(&negated, window, window, f32::NEG_INFINITY);
-    for ((b, &z), &minus_level) in blocked.iter_mut().zip(&elevation.data).zip(&lowest_water.data) {
+    for ((b, &z), &minus_level) in blocked
+        .iter_mut()
+        .zip(&elevation.data)
+        .zip(&lowest_water.data)
+    {
         // No water within reach leaves minus_level at minus infinity: skip.
         if minus_level.is_finite() && z + minus_level < min_height_m {
             *b = 1;
@@ -180,8 +194,9 @@ mod tests {
     fn slope_of_a_plane() {
         let rise = 5f32.to_radians().tan(); // 5°
         let cost = pixel_cost(&tilted_plane(10, rise), &NOTHING_BLOCKED, 0.1);
-        assert!((cost.get(5, 5) - 5.0).abs() < 0.01, "{}", cost.get(5, 5));
-        assert_eq!(cost.get(0, 5), f32::INFINITY, "edge pixels are unusable");
+        // 5°, or a hair over it after rounding up.
+        assert!((50..=51).contains(&cost.get(5, 5)), "{}", cost.get(5, 5));
+        assert_eq!(cost.get(0, 5), UNUSABLE, "edge pixels are unusable");
     }
 
     #[test]
@@ -189,8 +204,8 @@ mod tests {
         let mut elevation = tilted_plane(10, 0.02);
         elevation.set(5, 5, elevation.get(5, 5) + 0.4); // 40 cm rock
         let cost = pixel_cost(&elevation, &NOTHING_BLOCKED, 0.1);
-        assert_eq!(cost.get(5, 5), f32::INFINITY);
-        assert!(cost.get(2, 2).is_finite());
+        assert_eq!(cost.get(5, 5), UNUSABLE);
+        assert_ne!(cost.get(2, 2), UNUSABLE);
     }
 
     #[test]
@@ -206,8 +221,8 @@ mod tests {
         let mut blocked = NOTHING_BLOCKED;
         blocked[5 * 10 + 5] = 1;
         let cost = pixel_cost(&tilted_plane(10, 0.02), &blocked, 0.1);
-        assert_eq!(cost.get(5, 5), f32::INFINITY);
-        assert!(cost.get(4, 5).is_finite());
+        assert_eq!(cost.get(5, 5), UNUSABLE);
+        assert_ne!(cost.get(4, 5), UNUSABLE);
     }
 
     #[test]
@@ -272,7 +287,7 @@ mod tests {
         let mut elevation = tilted_plane(10, 0.02);
         elevation.set(5, 5, f32::NAN);
         let cost = pixel_cost(&elevation, &NOTHING_BLOCKED, 0.1);
-        assert_eq!(cost.get(4, 4), f32::INFINITY);
-        assert!(cost.get(2, 2).is_finite());
+        assert_eq!(cost.get(4, 4), UNUSABLE);
+        assert_ne!(cost.get(2, 2), UNUSABLE);
     }
 }

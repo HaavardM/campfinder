@@ -121,19 +121,21 @@ For each tile, the engine ([flatness/](flatness/), Rust):
    makes the summer mask. The winter one differs on natural lakes: frozen,
    they're ground (smooth on purpose, and with no surface for the lidar to
    see), except within 100 m of a stream; and bogs are ground under snow.
-1. **Cost per 1 m pixel** ([terrain.rs](flatness/src/terrain.rs)): the slope in
-   degrees (Horn's method, as `gdaldem slope`). Infinity where a tent can't
-   stand: blocked, missing data, or rough ground.
+1. **Cost per 1 m pixel** ([terrain.rs](flatness/src/terrain.rs)): the slope
+   (Horn's method, as `gdaldem slope`) in tenths of a degree, rounded up, in
+   one byte (a quarter of a float's memory traffic in steps 2 and 3). 255
+   where a tent can't stand: blocked, missing data, rough ground, or 25.5°
+   and steeper.
 2. **Steepest pixel under each tent placement**
    ([sliding_max.rs](flatness/src/sliding_max.rs)): a sliding-window maximum.
-   Because unusable pixels are infinitely steep, this one number answers both
-   "how steep?" and "is anything in the way?".
+   Because unusable pixels are the steepest possible value (255), this one
+   number answers both "how steep?" and "is anything in the way?".
    - A max over a rectangle is a max along rows, then down columns.
    - Each pass is "elementwise max of two long slices", which the compiler
-     turns into SIMD instructions. Cleverer algorithms (van Herk /
-     Gil-Werman: 3 comparisons per pixel at any window size) have steps that
-     depend on each other, so no SIMD; at our window sizes (≤ 12 px) the
-     simple version measured 2–6× faster.
+     turns into SIMD instructions (32 bytes at a time with AVX2). Cleverer
+     algorithms (van Herk / Gil-Werman: 3 comparisons per pixel at any
+     window size) have steps that depend on each other, so no SIMD; at our
+     window sizes (≤ 12 px) the simple version measured 2–6× faster.
 3. **Rotated tents** ([rotate.rs](flatness/src/rotate.rs)): rotate the terrain
    instead of the tent, then use the same rectangle filter. One rotation covers
    two headings 90° apart, so 12 headings need 6 rotations. Round tents are a
@@ -152,11 +154,12 @@ Measured on one thread of an Apple M-series Mac, one tile:
 
 | Step | ms |
 |---|---|
-| cost per pixel | 49 |
-| rectangle max 6 × 6 / 12 × 12 | 4 / 7 |
-| rectangle max 12 × 12, naive | 418 |
-| Keron, 12 headings | 401 |
-| Gamme, round | 11 |
+| cost per pixel | 36 |
+| rectangle max 6 × 6 / 12 × 12 | 0.9 / 1.7 |
+| rectangle max 12 × 12, naive | 648 |
+| rotate 45° | 27 |
+| Keron, 12 headings | 247 |
+| Gamme, round | 2 |
 
 All 90 tiles of `regions/test-known.env` take 7 s on the Mac's 10 threads.
 

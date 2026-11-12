@@ -2,9 +2,10 @@
 //! axis-aligned rectangle filter: rotate the terrain, not the tent.
 
 use crate::grid::Grid;
+use crate::terrain::UNUSABLE;
 
 /// Rotates `grid` by `degrees` into a new grid large enough to hold all of it.
-/// Pixels with no source (the new corners) are infinity.
+/// Pixels with no source (the new corners) are `UNUSABLE`.
 ///
 /// Rotated pixel (u, v) looks at source position (x, y), where
 /// `(x, y) - source_centre = R(degrees) · ((u, v) - rotated_centre)`.
@@ -16,7 +17,7 @@ use crate::grid::Grid;
 /// source pixel is within 0.71 px of some sample point, so with 2×2 none is
 /// ever skipped. The cost is that each value spreads by up to one pixel, so
 /// angled headings are slightly more conservative than 0° and 90°.
-pub fn rotate(grid: &Grid, degrees: f32) -> Grid {
+pub fn rotate(grid: &Grid<u8>, degrees: f32) -> Grid<u8> {
     let (sin, cos) = degrees.to_radians().sin_cos();
     let width = rotated_size(
         grid.width as f32 * cos.abs() + grid.height as f32 * sin.abs(),
@@ -26,7 +27,7 @@ pub fn rotate(grid: &Grid, degrees: f32) -> Grid {
         grid.width as f32 * sin.abs() + grid.height as f32 * cos.abs(),
         grid.height,
     );
-    let mut rotated = Grid::filled(width, height, f32::INFINITY);
+    let mut rotated = Grid::filled(width, height, UNUSABLE);
     let (src_cx, src_cy) = centre(grid.width, grid.height);
     let (rot_cx, rot_cy) = centre(width, height);
     for v in 0..height {
@@ -48,11 +49,11 @@ pub fn rotate(grid: &Grid, degrees: f32) -> Grid {
 /// straight away (e.g. keep the best heading) without another pass over
 /// memory.
 pub fn unrotate_each(
-    rotated: &Grid,
+    rotated: &Grid<u8>,
     degrees: f32,
     width: usize,
     height: usize,
-    mut visit: impl FnMut(usize, f32),
+    mut visit: impl FnMut(usize, u8),
 ) {
     let (sin, cos) = degrees.to_radians().sin_cos();
     let (src_cx, src_cy) = centre(width, height);
@@ -70,9 +71,9 @@ pub fn unrotate_each(
 
 /// Max of the source pixels whose centres are less than one pixel from
 /// (x, y): 2×2 pixels, or just one when (x, y) is exactly on a pixel centre.
-/// Anything outside the grid counts as infinity.
-fn max_around(grid: &Grid, x: f32, y: f32) -> f32 {
-    let mut max = f32::NEG_INFINITY;
+/// Anything outside the grid counts as `UNUSABLE`.
+fn max_around(grid: &Grid<u8>, x: f32, y: f32) -> u8 {
+    let mut max = 0;
     for py in [y.floor(), y.ceil()] {
         for px in [x.floor(), x.ceil()] {
             let inside =
@@ -80,7 +81,7 @@ fn max_around(grid: &Grid, x: f32, y: f32) -> f32 {
             let value = if inside {
                 grid.get(px as usize, py as usize)
             } else {
-                f32::INFINITY
+                UNUSABLE
             };
             max = max.max(value);
         }
@@ -111,7 +112,7 @@ mod tests {
     #[test]
     fn zero_degrees_round_trips_exactly() {
         let grid = random_grid(20, 13, &mut 7);
-        let mut back = Grid::filled(20, 13, 0.0);
+        let mut back = Grid::filled(20, 13, 0);
         unrotate_each(&rotate(&grid, 0.0), 0.0, 20, 13, |i, v| back.data[i] = v);
         assert_eq!(back, grid);
     }
@@ -122,13 +123,13 @@ mod tests {
         let mut seed = 3;
         for degrees in [15.0, 30.0, 45.0, 60.0, 75.0] {
             for _ in 0..20 {
-                let mut grid = Grid::filled(25, 25, 1.0);
+                let mut grid = Grid::filled(25, 25, 10);
                 let x = (crate::test_util::next_random(&mut seed) as usize) % 25;
                 let y = (crate::test_util::next_random(&mut seed) as usize) % 25;
-                grid.set(x, y, 9.0);
+                grid.set(x, y, 90);
                 let rotated = rotate(&grid, degrees);
                 assert!(
-                    rotated.data.contains(&9.0),
+                    rotated.data.contains(&90),
                     "{degrees}°: rock at ({x}, {y}) lost"
                 );
             }

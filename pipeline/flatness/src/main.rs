@@ -458,7 +458,7 @@ const MAX_SMOOTH_RESIDUAL_M: f32 = 0.001;
 /// The version of the results. Change it when they're computed differently
 /// or a file the next steps read changes (not when an output is dropped): it
 /// makes every tile count as not done, so they're all redone.
-const OUTPUT_FORMAT: u32 = 5;
+const OUTPUT_FORMAT: u32 = 6;
 
 fn settings_used(footprint: &Footprint, setup: &Setup) -> String {
     let args = &setup.args;
