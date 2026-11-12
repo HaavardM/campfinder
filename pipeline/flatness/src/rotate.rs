@@ -129,13 +129,21 @@ pub fn unrotate_each(
     let (sin, cos) = degrees.to_radians().sin_cos();
     let (src_cx, src_cy) = centre(width, height);
     let (rot_cx, rot_cy) = centre(rotated_width, rotated_height);
-    for y in 0..height {
-        for x in 0..width {
-            let (dx, dy) = (x as f32 - src_cx, y as f32 - src_cy);
-            // R(-degrees) undoes R(degrees).
-            let u = (rot_cx + dx * cos + dy * sin).round() as usize;
-            let v = (rot_cy - dx * sin + dy * cos).round() as usize;
-            visit(y * width + x, v * rotated_width + u);
+    // In blocks of 64 × 64 pixels rather than whole rows: a row reads the
+    // rotated grid along a diagonal, a new cache line every pixel or so,
+    // while a block's diagonal patch of it fits in the CPU's fastest cache.
+    const BLOCK: usize = 64;
+    for top in (0..height).step_by(BLOCK) {
+        for left in (0..width).step_by(BLOCK) {
+            for y in top..(top + BLOCK).min(height) {
+                for x in left..(left + BLOCK).min(width) {
+                    let (dx, dy) = (x as f32 - src_cx, y as f32 - src_cy);
+                    // R(-degrees) undoes R(degrees).
+                    let u = (rot_cx + dx * cos + dy * sin).round() as usize;
+                    let v = (rot_cy - dx * sin + dy * cos).round() as usize;
+                    visit(y * width + x, v * rotated_width + u);
+                }
+            }
         }
     }
 }
