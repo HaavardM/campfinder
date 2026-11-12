@@ -12,7 +12,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 REGION="${1:-regions/test-known.env}"
 
+./prepare_no_go.sh "$REGION"
 cargo build --release --quiet --manifest-path flatness/Cargo.toml
+# Untimed: downloads (and computes) whatever is missing, so the timed runs
+# measure computing only.
+flatness/target/release/flatness "$REGION" >/dev/null
 cpus=$(getconf _NPROCESSORS_ONLN)
 
 printf "%8s %10s %9s\n" threads seconds speedup
