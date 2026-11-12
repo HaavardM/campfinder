@@ -16,11 +16,13 @@
 
 mod progress;
 
+use std::cell::Cell;
 use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::sync::Mutex;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use flatness::download::{self, Model};
 use flatness::geotiff::{self, Georef, write_atomic};
@@ -239,6 +241,7 @@ fn run(
         // spreads them over its threads (`par_bridge` turns an ordinary
         // iterator into parallel work).
         arrivals.into_iter().par_bridge().for_each(|job| {
+            ramp_up();
             if let Err(error) = progress.track(|| process(&job, setup)) {
                 failures.lock().unwrap().push(error);
             }
@@ -247,6 +250,22 @@ fn run(
     });
     failures.into_inner().unwrap()
 }
+
+/// Holds back each thread's first tile by `RAMP_UP_STEP` per thread number.
+/// Tiles take about as long as each other, so threads that start together
+/// finish together, and the progress bar would move in jumps of a tile per
+/// thread for the whole run. Started apart, they stay apart. Costs each
+/// thread a moment's wait, once.
+fn ramp_up() {
+    thread_local!(static STARTED: Cell<bool> = const { Cell::new(false) });
+    if !STARTED.replace(true) {
+        let thread = rayon::current_thread_index().unwrap_or(0);
+        std::thread::sleep(RAMP_UP_STEP * thread as u32);
+    }
+}
+
+/// About a tile's time divided by the number of threads, on 32 threads.
+const RAMP_UP_STEP: Duration = Duration::from_millis(100);
 
 /// Downloads whichever of a tile's terrain and surface files isn't on disk
 /// yet, one after the other, and returns a one-line report.
