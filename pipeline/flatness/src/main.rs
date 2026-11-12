@@ -133,12 +133,23 @@ fn main() {
 /// for the regions' counties is downloaded.
 fn prepare() -> Result<Setup, String> {
     let args = parse_args().map_err(|error| format!("{error}\n{USAGE}"))?;
-    if let Some(threads) = args.threads {
-        // Read by every rayon thread pool when it starts: ours, and terrio's
-        // own (it rasterizes in parallel too), so both stay within the limit.
-        // SAFETY: no other threads exist yet to read the environment.
-        unsafe { std::env::set_var("RAYON_NUM_THREADS", threads.to_string()) };
-    }
+    // Tiles run in parallel, one per thread; the work within a tile doesn't.
+    // terrio, which burns the no-go polygons into each tile's mask, has a
+    // thread pool of its own, sized by RAYON_NUM_THREADS when it starts. At
+    // one thread it works on the calling thread. With more, one of our
+    // threads waiting for it would start another tile meanwhile (rayon lets
+    // a waiting thread work), and that tile's mask another, each on top of
+    // the last on the thread's stack: with thousands of tiles to go, a stack
+    // overflow. Loading the no-go polygons is faster on one thread too.
+    // SAFETY: no other threads exist yet to read the environment.
+    unsafe { std::env::set_var("RAYON_NUM_THREADS", "1") };
+    let threads = args.threads.unwrap_or_else(|| {
+        std::thread::available_parallelism().map_or(1, |n| n.get())
+    });
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()
+        .map_err(|e| e.to_string())?;
     let config: TentsFile = std::fs::read_to_string(&args.tents)
         .map_err(|e| e.to_string())
         .and_then(|text| toml::from_str(&text).map_err(|e| e.to_string()))
