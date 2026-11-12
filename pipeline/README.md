@@ -25,7 +25,7 @@ What `run.sh` does:
 
 | Step | What | Time |
 |---|---|---|
-| `prepare_no_go.sh` | Per region: download the N50 map data of its counties (`N50_COUNTIES`, 0.2–0.7 GB each, once) and collect where no tent may go into `data/no-go/<region>.gpkg`, with GDAL: water and streams (+2 m of shore), bogs, farmland, industry, golf courses and other land in use, roads (+8 m), tracks and trails, and 150 m around houses, cabins and built-up areas | a few seconds per county, once per region |
+| `prepare_no_go.sh` | Per region: download the N50 map data of its counties (`N50_COUNTIES`, 0.2–0.7 GB each, once) and collect where no tent may go into `data/no-go/<region>.gpkg`, with GDAL: water and streams (+2 m of shore), bogs, farmland, industry, golf courses and other land in use, 1 km around airports and runways, roads (+8 m), tracks and trails, and 150 m around houses, cabins and built-up areas | a few seconds per county, once per region |
 | `flatness` (Rust) | Downloads terrain and surface tiles 8 at a time (17 MB each, from Kartverket's WCS) and processes each tile as soon as both are there, on every CPU | downloads: ~8 s per file and connection; processing: ~0.5 s per tile per core |
 | `gdalbuildvrt` | One mosaic per result, for QGIS | seconds |
 | `build_map.sh` | The map's files in `data/map/`: `mapfiles` (Rust) turns every tile's 10 m slopes into heatmap points (spot counts per square and zoom) and areas (connected spots at 1°, 2° and 3°, outlines traced), and tippecanoe packs them into one PMTiles file per tent and season (named by a hash of its content), plus `manifest.json`. Publish with `publish.sh` | minutes for all regions |
@@ -186,6 +186,9 @@ cd .. && ./scaling.sh   # same tiles at 1, 2, 4, … threads: where does it stop
   results know nothing about this winter's ice: check it on the spot.
 - **Buildings by type:** the 150 m rule covers houses, cabins, summer farms
   and mountain huts (types 111–179), not barns, garages or tourist huts.
+- **Not in N50:** substations, small ponds and fenced areas. Where the
+  surface model sees equipment or fences they're blocked, but the flat
+  gravel between can come through.
 - **Angled headings are slightly conservative** (about 1 m) because of how
   the rotated grid is sampled, so no rock is ever skipped.
 - **Objects under 0.5 m** (small boulders, low scrub) and wet ground the map

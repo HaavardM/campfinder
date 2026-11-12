@@ -28,15 +28,18 @@ LAKE="'Innsjø'"
 # Around streams and rivers, the current keeps lake ice thin: no tents on
 # the ice this close to one.
 NEAR_STREAM_M=100
+# No camping near an airport or airfield: noise, and wide flat grass that
+# looks perfect. Small airfields are often mapped as the runway alone.
+AIRPORT_M=1000
 # Land in use, as flat as it gets and no place for a tent.
 IN_USE="'DyrketMark', 'Industriområde', 'Golfbane', 'SportIdrettPlass', 'Alpinbakke',
-  'Gravplass', 'Park', 'Lufthavn', 'Rullebane', 'Steinbrudd', 'Steintipp'"
+  'Gravplass', 'Park', 'Steinbrudd', 'Steintipp'"
 
 # Step 1 copies these from each county's N50 into a small GeoPackage, cut to
 # the region: N50 layer, then which objects (an attribute filter). The
 # geodatabase driver applies both filters itself, which is fast.
 COPIES=(
-  "N50_Arealdekke_omrade" "objtype IN ($WATER, $LAKE, 'Myr', $IN_USE,
+  "N50_Arealdekke_omrade" "objtype IN ($WATER, $LAKE, 'Myr', $IN_USE, 'Lufthavn', 'Rullebane',
     'Tettbebyggelse', 'BymessigBebyggelse')"
   "N50_Arealdekke_senterlinje" "objtype = 'ElvBekk'"
   # Inhabited buildings, by the building register's type: 111–179 are
@@ -71,6 +74,8 @@ QUERIES=(
   # mapped.
   "SELECT objtype AS kind, 'always' AS class, geom FROM N50_Arealdekke_omrade
    WHERE objtype IN ($IN_USE)"
+  "SELECT objtype AS kind, 'always' AS class, ST_Buffer(geom, $AIRPORT_M, 4) AS geom
+   FROM N50_Arealdekke_omrade WHERE objtype IN ('Lufthavn', 'Rullebane')"
   # Built-up areas, and their 150 m.
   "SELECT objtype AS kind, 'always' AS class, ST_Buffer(geom, $HOUSE_DISTANCE_M, 4) AS geom
    FROM N50_Arealdekke_omrade
@@ -105,8 +110,9 @@ for region in "$@"; do
   copy="$gpkg.copy.gpkg"
   part="$gpkg.part.gpkg"
   rm -f "$copy" "$part"
-  # The region's box, widened so a house just outside it still counts.
-  margin=$HOUSE_DISTANCE_M
+  # The region's box, widened so an airport or a house just outside it still
+  # counts.
+  margin=$AIRPORT_M
   box=($((WEST - margin)) $((SOUTH - margin)) $((EAST + margin)) $((NORTH + margin)))
 
   for county in $N50_COUNTIES; do
