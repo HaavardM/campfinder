@@ -88,8 +88,8 @@ Each tile's `.done` file records the tent footprint, limits and no-go
 recipe it was computed with, so changing any of them recomputes exactly
 what's affected.
 
-- **Tents:** edit [tents.toml](tents.toml) and rerun. Sizes are rounded to
-  whole metres, clearance included.
+- **Tents:** edit [tents.toml](tents.toml) and rerun. Sizes are rounded up
+  to whole metres; guy lines and pegs don't need flat ground.
 - **Bumpiness:** `--max-roughness-m` (default 0.1). A pixel sitting more than
   this above or below the average of its 3 × 3 neighbourhood counts as a rock
   or hummock: `./run.sh --max-roughness-m 0.15`

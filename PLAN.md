@@ -47,9 +47,9 @@ default. Results move to the Mac with `pg_dump` / `pg_restore`.
 ## Finding flat spots
 
 Tents are defined in `pipeline/tents.toml`, either `round` (diameter) or
-`rectangle` (width × length), plus one `clearance_m` added on every side for
-guy lines. Starting with the Gamme 8 PC (round, 4.32 m) and the Keron 4 GT
-(5 × 2.1 m).
+`rectangle` (width × length), rounded up to whole metres; guy lines and pegs
+don't need flat ground. Starting with the Gamme 8 PC (round, 4.32 m) and the
+Keron 4 GT (5 × 2.1 m).
 
 Each 1 m pixel gets a cost: its slope in degrees, or infinity if a tent
 can't stand there. That covers no-go areas (N50: water, roads, land in use,
@@ -174,5 +174,4 @@ zoom 14), it shows the spots themselves, merged into orange areas.
 
 ## Open questions
 
-1. How much extra room the guy lines need (`clearance_m`, default 0.5 m).
-2. Places in Rondane and Dovre you know well enough to judge the results.
+1. Places in Rondane and Dovre you know well enough to judge the results.

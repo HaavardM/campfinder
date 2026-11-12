@@ -144,7 +144,7 @@ fn prepare() -> Result<Setup, String> {
     let footprints: Vec<Footprint> = config
         .tents
         .iter()
-        .map(|t| Footprint::of(t, config.clearance_m))
+        .map(Footprint::of)
         .collect();
     for (tent, footprint) in config.tents.iter().zip(&footprints) {
         // +1 for the slope calculation's own 3×3 neighbourhood, +1 for the

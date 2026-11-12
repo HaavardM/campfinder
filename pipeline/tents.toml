@@ -1,10 +1,8 @@
 # Tents to compute flatness for. Sizes are the tent's own footprint in
-# metres; the pipeline adds `clearance_m` on every side for guy lines and
-# pegs, so the flat area checked is a bit larger than the tent itself.
+# metres, rounded up to whole metres; guy lines and pegs don't need flat
+# ground.
 #
 # Changing a tent (or adding one) only reprocesses that tent.
-
-clearance_m = 0.5
 
 [[tent]]
 name = "Gamme 8 PC"

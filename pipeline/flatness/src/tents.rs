@@ -4,8 +4,6 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 pub struct TentsFile {
-    /// Extra ground on every side of the tent, for guy lines and pegs.
-    pub clearance_m: f32,
     #[serde(rename = "tent")]
     pub tents: Vec<Tent>,
 }
@@ -36,8 +34,8 @@ impl Tent {
     }
 }
 
-/// The area a tent needs, in whole 1 m pixels (sizes are rounded to the
-/// nearest metre, clearance included).
+/// The area a tent needs, in whole 1 m pixels: sizes are rounded up, so the
+/// footprint is never smaller than the tent.
 #[derive(Debug, PartialEq)]
 pub enum Footprint {
     /// A pixelated disc, described as overlapping centred rectangles
@@ -49,8 +47,8 @@ pub enum Footprint {
 }
 
 impl Footprint {
-    pub fn of(tent: &Tent, clearance_m: f32) -> Footprint {
-        let pixels = |metres: f32| ((metres + 2.0 * clearance_m).round() as usize).max(1);
+    pub fn of(tent: &Tent) -> Footprint {
+        let pixels = |metres: f32| (metres.ceil() as usize).max(1);
         match tent.shape {
             Shape::Round { diameter_m } => Footprint::Round {
                 rectangles: disc_as_rectangles(pixels(diameter_m)),
@@ -112,10 +110,10 @@ mod tests {
         assert_eq!(file.tents.len(), 2);
         assert_eq!(file.tents[1].slug(), "keron-4-gt");
         assert_eq!(
-            Footprint::of(&file.tents[1], file.clearance_m),
+            Footprint::of(&file.tents[1]),
             Footprint::Rectangle {
                 width: 3,
-                length: 6
+                length: 5
             }
         );
     }
