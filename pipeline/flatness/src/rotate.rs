@@ -2,6 +2,7 @@
 //! axis-aligned rectangle filter: rotate the terrain, not the tent.
 
 use crate::grid::Grid;
+use crate::sliding_max::rect_max;
 use crate::terrain::UNUSABLE;
 
 /// Rotates `grid` by `degrees` into a new grid large enough to hold all of it.
@@ -11,13 +12,22 @@ use crate::terrain::UNUSABLE;
 /// `(x, y) - source_centre = R(degrees) · ((u, v) - rotated_centre)`.
 ///
 /// That position usually falls between source pixels, and it takes the max
-/// of the (up to) 2×2 pixels around it. Taking the max, rather than the
-/// nearest pixel, matters: rotated sample points don't land in every source
-/// pixel, and a skipped pixel could be the one rock that ruins a spot. Every
-/// source pixel is within 0.71 px of some sample point, so with 2×2 none is
-/// ever skipped. The cost is that each value spreads by up to one pixel, so
+/// of the 2×2 pixels around it. Taking the max, rather than the nearest
+/// pixel, matters: rotated sample points don't land in every source pixel,
+/// and a skipped pixel could be the one rock that ruins a spot. Every source
+/// pixel is within 0.71 px of some sample point, so with 2×2 none is ever
+/// skipped. The cost is that each value spreads by up to one pixel, so
 /// angled headings are slightly more conservative than 0° and 90°.
+///
+/// The 2×2 maxima are one `rect_max` pass up front, which is SIMD and fast,
+/// so each rotated pixel is a single lookup: the 2×2 block starting at
+/// (⌊x⌋, ⌊y⌋). (On the rare position exactly on a pixel centre, that block
+/// holds more pixels than needed: more conservative, never less.) At 0°,
+/// where every position is on a pixel centre, it's an exact copy instead.
 pub fn rotate(grid: &Grid<u8>, degrees: f32) -> Grid<u8> {
+    if degrees == 0.0 {
+        return grid.clone();
+    }
     let (sin, cos) = degrees.to_radians().sin_cos();
     let width = rotated_size(
         grid.width as f32 * cos.abs() + grid.height as f32 * sin.abs(),
@@ -27,66 +37,61 @@ pub fn rotate(grid: &Grid<u8>, degrees: f32) -> Grid<u8> {
         grid.width as f32 * sin.abs() + grid.height as f32 * cos.abs(),
         grid.height,
     );
-    let mut rotated = Grid::filled(width, height, UNUSABLE);
+    let blocks = rect_max(grid, 2, 2);
     let (src_cx, src_cy) = centre(grid.width, grid.height);
     let (rot_cx, rot_cy) = centre(width, height);
+    let mut data = Vec::with_capacity(width * height);
     for v in 0..height {
+        let dv = v as f32 - rot_cy;
         for u in 0..width {
-            let (du, dv) = (u as f32 - rot_cx, v as f32 - rot_cy);
-            let x = src_cx + du * cos - dv * sin;
-            let y = src_cy + du * sin + dv * cos;
-            rotated.set(u, v, max_around(grid, x, y));
+            let du = u as f32 - rot_cx;
+            let x = (src_cx + du * cos - dv * sin).floor();
+            let y = (src_cy + du * sin + dv * cos).floor();
+            // A block starting off the grid is (partly) off it: unusable.
+            let inside =
+                x >= 0.0 && y >= 0.0 && (x as usize) < grid.width && (y as usize) < grid.height;
+            data.push(if inside {
+                blocks.get(x as usize, y as usize)
+            } else {
+                UNUSABLE
+            });
         }
     }
-    rotated
+    Grid {
+        width,
+        height,
+        data,
+    }
 }
 
 /// The inverse of `rotate`: for each pixel of the original `width` × `height`
-/// grid, calls `visit(index, value)` with the pixel's index in that grid and
-/// the value of the nearest pixel in `rotated`.
+/// grid, calls `visit(index, rotated_index)` with the pixel's index in that
+/// grid and the index of the nearest pixel in a grid rotated by `degrees`
+/// to `rotated_width` × `rotated_height`.
 ///
-/// A callback rather than a new grid, so the caller can use each value
-/// straight away (e.g. keep the best heading) without another pass over
-/// memory.
+/// A callback rather than a new grid, so the caller can read every grid in
+/// the rotated frame at that pixel and use the values straight away (e.g.
+/// keep the best heading) without another pass over memory.
 pub fn unrotate_each(
-    rotated: &Grid<u8>,
+    rotated_width: usize,
+    rotated_height: usize,
     degrees: f32,
     width: usize,
     height: usize,
-    mut visit: impl FnMut(usize, u8),
+    mut visit: impl FnMut(usize, usize),
 ) {
     let (sin, cos) = degrees.to_radians().sin_cos();
     let (src_cx, src_cy) = centre(width, height);
-    let (rot_cx, rot_cy) = centre(rotated.width, rotated.height);
+    let (rot_cx, rot_cy) = centre(rotated_width, rotated_height);
     for y in 0..height {
         for x in 0..width {
             let (dx, dy) = (x as f32 - src_cx, y as f32 - src_cy);
             // R(-degrees) undoes R(degrees).
             let u = (rot_cx + dx * cos + dy * sin).round() as usize;
             let v = (rot_cy - dx * sin + dy * cos).round() as usize;
-            visit(y * width + x, rotated.get(u, v));
+            visit(y * width + x, v * rotated_width + u);
         }
     }
-}
-
-/// Max of the source pixels whose centres are less than one pixel from
-/// (x, y): 2×2 pixels, or just one when (x, y) is exactly on a pixel centre.
-/// Anything outside the grid counts as `UNUSABLE`.
-fn max_around(grid: &Grid<u8>, x: f32, y: f32) -> u8 {
-    let mut max = 0;
-    for py in [y.floor(), y.ceil()] {
-        for px in [x.floor(), x.ceil()] {
-            let inside =
-                px >= 0.0 && py >= 0.0 && (px as usize) < grid.width && (py as usize) < grid.height;
-            let value = if inside {
-                grid.get(px as usize, py as usize)
-            } else {
-                UNUSABLE
-            };
-            max = max.max(value);
-        }
-    }
-    max
 }
 
 /// Enough pixels for `needed`, keeping the same odd/even parity as the source
@@ -112,8 +117,11 @@ mod tests {
     #[test]
     fn zero_degrees_round_trips_exactly() {
         let grid = random_grid(20, 13, &mut 7);
+        let rotated = rotate(&grid, 0.0);
         let mut back = Grid::filled(20, 13, 0);
-        unrotate_each(&rotate(&grid, 0.0), 0.0, 20, 13, |i, v| back.data[i] = v);
+        unrotate_each(rotated.width, rotated.height, 0.0, 20, 13, |i, j| {
+            back.data[i] = rotated.data[j]
+        });
         assert_eq!(back, grid);
     }
 
