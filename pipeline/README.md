@@ -131,11 +131,13 @@ For each tile, the engine ([flatness/](flatness/), Rust):
    Because unusable pixels are the steepest possible value (255), this one
    number answers both "how steep?" and "is anything in the way?".
    - A max over a rectangle is a max along rows, then down columns.
-   - Each pass is "elementwise max of two long slices", which the compiler
+   - Each pass is a max over a window along a line, by doubling: the max of
+     2 neighbours, then of 2 such pairs, and so on, then two overlapping
+     halves. A 61 px window (the low-shore rule) takes 6 rounds, not 60.
+   - Each round is "elementwise max of two long slices", which the compiler
      turns into SIMD instructions (32 bytes at a time with AVX2). Cleverer
      algorithms (van Herk / Gil-Werman: 3 comparisons per pixel at any
-     window size) have steps that depend on each other, so no SIMD; at our
-     window sizes (≤ 12 px) the simple version measured 2–6× faster.
+     window size) have steps that depend on each other, so no SIMD.
 3. **Rotated tents** ([rotate.rs](flatness/src/rotate.rs)): rotate the terrain
    instead of the tent, then use the same rectangle filter. One rotation covers
    two headings 90° apart, so 12 headings need 6 rotations (5: 0° needs

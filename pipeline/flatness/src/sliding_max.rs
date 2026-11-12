@@ -9,20 +9,14 @@ use crate::terrain::UNUSABLE;
 /// edge never looks like it fits.
 ///
 /// Two passes, because a max over a rectangle is a max along rows followed by
-/// a max down columns:
+/// a max down columns. Each is a max over `window` values in a line, done by
+/// doubling (`window_max`): a window of 61 takes 6 rounds, not 60.
 ///
-/// 1. Along rows: the max of `width` copies of each row, each shifted one
-///    pixel further.
-/// 2. Down columns: each output row is the max of `height` whole input rows.
-///
-/// Both passes are "elementwise max of two long slices", which the compiler
-/// turns into SIMD instructions (32 bytes at a time with AVX2), and they
-/// walk memory in order. Cleverer algorithms (van Herk / Gil-Werman) cost a
-/// fixed 3 comparisons per pixel whatever the window, but their steps depend
-/// on each other, so they can't use SIMD. Tent windows are at most 12 px (the tile
-/// border limits them), and at that size the simple version measured several
-/// times faster. (The low-shore rule's 61 px window costs more passes, still
-/// a small part of a tile.)
+/// Every round is "elementwise max of two long slices", which the compiler
+/// turns into SIMD instructions (32 bytes at a time with AVX2), walking
+/// memory in order. Cleverer algorithms (van Herk / Gil-Werman) cost a fixed
+/// 3 comparisons per pixel whatever the window, but their steps depend on
+/// each other, so they can't use SIMD.
 pub fn rect_max(grid: &Grid<u8>, width: usize, height: usize) -> Grid<u8> {
     rect_max_outside(grid, width, height, UNUSABLE)
 }
@@ -42,39 +36,74 @@ pub fn rect_max_outside<T: Copy + PartialOrd>(
 
 fn rows_max<T: Copy + PartialOrd>(grid: &Grid<T>, window: usize, outside: T) -> Grid<T> {
     let before = (window - 1) / 2;
-    let mut out = Grid::filled(grid.width, grid.height, outside);
-    // One row padded with `outside` on both sides, so every shifted copy is
-    // in bounds.
-    let mut padded = vec![outside; grid.width + window - 1];
-    let rows_in = grid.data.chunks_exact(grid.width);
-    let rows_out = out.data.chunks_exact_mut(grid.width);
-    for (row_in, row_out) in rows_in.zip(rows_out) {
-        padded[before..before + grid.width].copy_from_slice(row_in);
-        row_out.copy_from_slice(&padded[..grid.width]);
-        for shift in 1..window {
-            max_into(row_out, &padded[shift..shift + grid.width]);
-        }
+    let mut out = Vec::with_capacity(grid.data.len());
+    let (mut padded, mut spare) = (Vec::new(), Vec::new());
+    for row in grid.data.chunks_exact(grid.width) {
+        // The row padded with `outside` on both sides, so every window is
+        // in bounds.
+        padded.clear();
+        padded.resize(before, outside);
+        padded.extend_from_slice(row);
+        padded.resize(grid.width + window - 1, outside);
+        window_max(&mut padded, &mut spare, 1, window, grid.width, &mut out);
     }
-    out
+    Grid {
+        width: grid.width,
+        height: grid.height,
+        data: out,
+    }
 }
 
 fn columns_max<T: Copy + PartialOrd>(grid: &Grid<T>, window: usize, outside: T) -> Grid<T> {
     let before = (window - 1) / 2;
-    // Each output row starts as its input row, which is in its window anyway.
-    let mut out = grid.clone();
-    for y in 0..grid.height {
-        let row_out = &mut out.data[y * grid.width..(y + 1) * grid.width];
-        for source_y in (y as isize - before as isize)..(y + window - before) as isize {
-            if source_y < 0 || source_y >= grid.height as isize {
-                // The window reaches off the grid.
-                row_out.iter_mut().for_each(|v| *v = max(*v, outside));
-                continue;
-            }
-            let start = source_y as usize * grid.width;
-            max_into(row_out, &grid.data[start..start + grid.width]);
-        }
+    // The grid with rows of `outside` above and below it.
+    let mut padded = vec![outside; (grid.height + window - 1) * grid.width];
+    padded[before * grid.width..][..grid.data.len()].copy_from_slice(&grid.data);
+    let (mut spare, mut out) = (Vec::new(), Vec::with_capacity(grid.data.len()));
+    let count = grid.data.len();
+    window_max(&mut padded, &mut spare, grid.width, window, count, &mut out);
+    Grid {
+        width: grid.width,
+        height: grid.height,
+        data: out,
     }
-    out
+}
+
+/// Appends to `out`, for each of the first `count` positions i: the max of
+/// `window` values of `values`, `step` apart, starting at i (`step` 1 along
+/// a row, a row's length down columns). `values` must have room for the
+/// last window. Both it and `spare` (any vector, to reuse its memory) are
+/// overwritten.
+///
+/// By doubling: after one round, `values[i]` is the max of 2 values from i,
+/// after two of 4, and so on, each round the max of two values `span` apart.
+/// Once `span` is at least half the window, two overlapping spans cover it.
+/// Each round writes to the other vector: reading and writing the same one
+/// keeps the compiler from using SIMD (measured 7 × slower).
+fn window_max<T: Copy + PartialOrd>(
+    values: &mut Vec<T>,
+    spare: &mut Vec<T>,
+    step: usize,
+    window: usize,
+    count: usize,
+    out: &mut Vec<T>,
+) {
+    let mut span = 1;
+    while span * 2 <= window {
+        let shift = span * step;
+        spare.clear();
+        spare.extend(
+            values
+                .iter()
+                .zip(&values[shift..])
+                .map(|(&a, &b)| max(a, b)),
+        );
+        std::mem::swap(values, spare);
+        span *= 2;
+    }
+    let shift = (window - span) * step;
+    let last = values.iter().zip(&values[shift..]).take(count);
+    out.extend(last.map(|(&a, &b)| max(a, b)));
 }
 
 /// `out[i] = max(out[i], other[i])` for every i.
