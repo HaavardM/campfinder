@@ -101,16 +101,22 @@ fn read_own_compressed(
     let row_bytes = size * 4;
     let strip_bytes = decoder.get_tag_u32(Tag::RowsPerStrip).map_err(e)? as usize * row_bytes;
 
-    let mut bytes = vec![0u8; size * row_bytes];
-    if offsets.len() != bytes.len().div_ceil(strip_bytes) {
+    if offsets.len() != (size * row_bytes).div_ceil(strip_bytes) {
         return Err("unexpected number of strips".into());
     }
+    // A strip at a time, into one buffer the CPU's cache holds, rather
+    // than the whole tile into memory and back.
+    let mut strip = vec![0u8; strip_bytes];
+    let mut data = vec![0f32; size * size];
     let mut inflater = libdeflater::Decompressor::new();
-    for ((&offset, &count), strip) in offsets
+    let pixels_per_strip = strip_bytes / 4;
+    for ((&offset, &count), out) in offsets
         .iter()
         .zip(&byte_counts)
-        .zip(bytes.chunks_mut(strip_bytes))
+        .zip(data.chunks_mut(pixels_per_strip))
     {
+        // The last strip can be shorter.
+        let strip = &mut strip[..out.len() * 4];
         let compressed = file
             .get(offset as usize..(offset + count) as usize)
             .ok_or("a strip reaches past the end of the file")?;
@@ -120,22 +126,20 @@ fn read_own_compressed(
         if inflated != strip.len() {
             return Err("a strip is too short".into());
         }
-    }
-
-    // Undo the predictor (see `write_f32_compressed`) row by row: add each
-    // byte to the one before, then take each float's 4 bytes from the 4
-    // runs of bytes.
-    let mut data = vec![0f32; size * size];
-    for (row, out) in bytes
-        .chunks_exact_mut(row_bytes)
-        .zip(data.chunks_exact_mut(size))
-    {
-        for i in 1..row.len() {
-            row[i] = row[i].wrapping_add(row[i - 1]);
-        }
-        for (x, value) in out.iter_mut().enumerate() {
-            let b = [row[x], row[size + x], row[2 * size + x], row[3 * size + x]];
-            *value = f32::from_be_bytes(b);
+        // Undo the predictor (see `write_f32_compressed`) row by row: add
+        // each byte to the one before, then take each float's 4 bytes from
+        // the 4 runs of bytes.
+        for (row, out) in strip
+            .chunks_exact_mut(row_bytes)
+            .zip(out.chunks_exact_mut(size))
+        {
+            for i in 1..row.len() {
+                row[i] = row[i].wrapping_add(row[i - 1]);
+            }
+            for (x, value) in out.iter_mut().enumerate() {
+                let b = [row[x], row[size + x], row[2 * size + x], row[3 * size + x]];
+                *value = f32::from_be_bytes(b);
+            }
         }
     }
     Ok(Some(Grid {
@@ -220,13 +224,17 @@ pub fn write_f32_compressed(path: &Path, grid: &Grid, at: &Georef) -> Result<(),
     for row in grid.data.chunks(grid.width) {
         rows.extend(float_predictor(row));
     }
-    write(path, Compression::Deflate(DeflateLevel::Balanced), |encoder| {
-        let mut image =
-            encoder.new_image::<colortype::Gray32Float>(grid.width as u32, grid.height as u32)?;
-        write_geo_tags(image.encoder(), at, "nan")?;
-        image.encoder().write_tag(Tag::Predictor, 3u16)?; // floating point
-        image.write_data(&rows)
-    })
+    write(
+        path,
+        Compression::Deflate(DeflateLevel::Balanced),
+        |encoder| {
+            let mut image = encoder
+                .new_image::<colortype::Gray32Float>(grid.width as u32, grid.height as u32)?;
+            write_geo_tags(image.encoder(), at, "nan")?;
+            image.encoder().write_tag(Tag::Predictor, 3u16)?; // floating point
+            image.write_data(&rows)
+        },
+    )
 }
 
 /// One row through the floating-point predictor (see `write_f32_compressed`).
