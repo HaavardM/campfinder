@@ -9,4 +9,5 @@ export type Region = {
 export const REGIONS: Region[] = [
 	{ name: "Rondane", bounds: [9.45, 61.72, 10.3, 62.12] },
 	{ name: "Dovre", bounds: [8.9, 62.0, 9.9, 62.45] },
+	{ name: "Sogn", bounds: [5.7, 61.0, 7.4, 61.6] },
 ];
