@@ -40,21 +40,32 @@ pub fn rotate(grid: &Grid<u8>, degrees: f32) -> Grid<u8> {
     let blocks = rect_max(grid, 2, 2);
     let (src_cx, src_cy) = centre(grid.width, grid.height);
     let (rot_cx, rot_cy) = centre(width, height);
-    let mut data = Vec::with_capacity(width * height);
-    for v in 0..height {
+    let (grid_w, grid_h) = (grid.width as f32, grid.height as f32);
+    // The parts of the source position that depend only on u, the same for
+    // every row: worked out once.
+    let du = |u: usize| u as f32 - rot_cx;
+    let x_of_u: Vec<f32> = (0..width).map(|u| src_cx + du(u) * cos).collect();
+    let y_of_u: Vec<f32> = (0..width).map(|u| src_cy + du(u) * sin).collect();
+    let mut data = vec![UNUSABLE; width * height];
+    for (v, row) in data.chunks_exact_mut(width).enumerate() {
         let dv = v as f32 - rot_cy;
-        for u in 0..width {
-            let du = u as f32 - rot_cx;
-            let x = (src_cx + du * cos - dv * sin).floor();
-            let y = (src_cy + du * sin + dv * cos).floor();
-            // A block starting off the grid is (partly) off it: unusable.
-            let inside =
-                x >= 0.0 && y >= 0.0 && (x as usize) < grid.width && (y as usize) < grid.height;
-            data.push(if inside {
-                blocks.get(x as usize, y as usize)
-            } else {
-                UNUSABLE
-            });
+        let (dv_sin, dv_cos) = (dv * sin, dv * cos);
+        // Where pixel u of this row looks in the source: (⌊x⌋, ⌊y⌋).
+        let source = |u: usize| ((x_of_u[u] - dv_sin).floor(), (y_of_u[u] + dv_cos).floor());
+        // A block starting off the grid is (partly) off it: unusable.
+        let inside = |u: usize| {
+            let (x, y) = source(u);
+            x >= 0.0 && y >= 0.0 && x < grid_w && y < grid_h
+        };
+        // The row crosses the grid once: only that stretch needs looking
+        // up. The rest, about half the pixels at 45°, stays unusable. x and
+        // y are a + b·u: solve 0 ≤ x < width and 0 ≤ y < height for u.
+        let (x_lo, x_hi) = inside_span(src_cx - rot_cx * cos - dv_sin, cos, grid_w);
+        let (y_lo, y_hi) = inside_span(src_cy - rot_cx * sin + dv_cos, sin, grid_h);
+        let (start, end) = exact_ends(width, x_lo.max(y_lo), x_hi.min(y_hi), inside);
+        for (u, value) in (start..end).zip(&mut row[start..end]) {
+            let (x, y) = source(u);
+            *value = blocks.get(x as usize, y as usize);
         }
     }
     Grid {
@@ -62,6 +73,41 @@ pub fn rotate(grid: &Grid<u8>, degrees: f32) -> Grid<u8> {
         height,
         data,
     }
+}
+
+/// The u where 0 ≤ a + b·u < n, as real numbers: (lowest, highest).
+fn inside_span(a: f32, b: f32, n: f32) -> (f32, f32) {
+    let (p, q) = (-a / b, (n - a) / b);
+    (p.min(q), p.max(q))
+}
+
+/// The first and (one past) the last u in `0..len` where `inside(u)`,
+/// which must be one stretch. `lowest` to `highest` is that stretch by exact
+/// maths; float rounding puts it a little off (far off when b is near 0),
+/// so both ends are moved to where `inside` itself says.
+fn exact_ends(
+    len: usize,
+    lowest: f32,
+    highest: f32,
+    inside: impl Fn(usize) -> bool,
+) -> (usize, usize) {
+    // `as` saturates (and makes NaN 0), so this clamps to 0..=len.
+    let clamp = |u: f32| (u as usize).min(len);
+    let mut start = clamp(lowest);
+    while start > 0 && inside(start - 1) {
+        start -= 1;
+    }
+    while start < len && !inside(start) {
+        start += 1;
+    }
+    let mut end = clamp(highest).max(start);
+    while end < len && inside(end) {
+        end += 1;
+    }
+    while end > start && !inside(end - 1) {
+        end -= 1;
+    }
+    (start, end)
 }
 
 /// The inverse of `rotate`: for each pixel of the original `width` × `height`
@@ -123,6 +169,44 @@ mod tests {
             back.data[i] = rotated.data[j]
         });
         assert_eq!(back, grid);
+    }
+
+    /// `rotate` the obvious way: every pixel checked and looked up.
+    fn rotate_naive(grid: &Grid<u8>, degrees: f32) -> Grid<u8> {
+        let rotated = rotate(grid, degrees); // for its size only
+        let blocks = rect_max(grid, 2, 2);
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let (src_cx, src_cy) = centre(grid.width, grid.height);
+        let (rot_cx, rot_cy) = centre(rotated.width, rotated.height);
+        let mut out = Grid::filled(rotated.width, rotated.height, UNUSABLE);
+        for v in 0..rotated.height {
+            for u in 0..rotated.width {
+                let (du, dv) = (u as f32 - rot_cx, v as f32 - rot_cy);
+                let x = (src_cx + du * cos - dv * sin).floor();
+                let y = (src_cy + du * sin + dv * cos).floor();
+                if x >= 0.0 && y >= 0.0 && x < grid.width as f32 && y < grid.height as f32 {
+                    out.set(u, v, blocks.get(x as usize, y as usize));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn matches_naive() {
+        let mut seed = 5;
+        for (width, height) in [(1, 1), (2, 7), (13, 13), (40, 9), (31, 64)] {
+            let mut grid = random_grid(width, height, &mut seed);
+            // No unusable source pixels, so any unusable pixel is outside.
+            grid.data.iter_mut().for_each(|v| *v = (*v).min(200));
+            for degrees in [1.0, 15.0, 30.0, 45.0, 60.0, 75.0, 89.0, 90.0, 135.0, 300.0] {
+                assert_eq!(
+                    rotate(&grid, degrees),
+                    rotate_naive(&grid, degrees),
+                    "{width}×{height} at {degrees}°"
+                );
+            }
+        }
     }
 
     #[test]
