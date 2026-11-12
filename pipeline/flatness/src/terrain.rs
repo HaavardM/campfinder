@@ -150,30 +150,51 @@ pub fn mark_low_shore(
 /// The best-fitting plane is cheap here: over a square window centred on
 /// the pixel, the constant, the x and the y terms don't interact, so each is
 /// a plain sum. With heights relative to the centre, f32 is plenty.
+///
+/// The sums are built a row at a time, one window position after the other
+/// along the whole row, so the compiler can use SIMD: 8 pixels at once
+/// with AVX2, 4 on the Mac.
 pub fn mark_smooth(blocked: &mut [u8], elevation: &Grid, max_residual_m: f32) {
     const R: usize = 2; // 5 × 5
     let n = ((2 * R + 1) * (2 * R + 1)) as f32;
     let sum_d2 = n * 2.0; // Σ dx² over the window = 5 · (4 + 1 + 0 + 1 + 4)
     let max_sum_squares = max_residual_m * max_residual_m * n;
+    // The pixels of a row that have a full window: x from R to width - R.
+    let (width, inner) = (elevation.width, elevation.width - 2 * R);
+    let mut sums = [
+        vec![0f32; inner],
+        vec![0f32; inner],
+        vec![0f32; inner],
+        vec![0f32; inner],
+    ];
     for y in R..elevation.height - R {
-        for x in R..elevation.width - R {
-            let centre = elevation.get(x, y);
-            let (mut sum, mut sum_x, mut sum_y, mut sum_sq) = (0f32, 0f32, 0f32, 0f32);
-            for dy in -(R as isize)..=R as isize {
-                for dx in -(R as isize)..=R as isize {
-                    let z = elevation.get((x as isize + dx) as usize, (y as isize + dy) as usize)
-                        - centre;
-                    sum += z;
-                    sum_x += dx as f32 * z;
-                    sum_y += dy as f32 * z;
-                    sum_sq += z * z;
+        let centre = &elevation.data[y * width + R..][..inner];
+        for s in &mut sums {
+            s.fill(0.0);
+        }
+        let [sum, sum_x, sum_y, sum_sq] = &mut sums;
+        for dy in -(R as isize)..=R as isize {
+            let row = &elevation.data[(y as isize + dy) as usize * width..][..width];
+            for dx in -(R as isize)..=R as isize {
+                // Each pixel's neighbour at (dx, dy).
+                let neighbour = &row[(R as isize + dx) as usize..][..inner];
+                for i in 0..inner {
+                    let z = neighbour[i] - centre[i];
+                    sum[i] += z;
+                    sum_x[i] += dx as f32 * z;
+                    sum_y[i] += dy as f32 * z;
+                    sum_sq[i] += z * z;
                 }
             }
+        }
+        for i in 0..inner {
             // What the plane doesn't explain: Σz² minus the parts explained
             // by the mean, the x slope and the y slope. (NaN never blocks.)
-            let residual = sum_sq - sum * sum / n - (sum_x * sum_x + sum_y * sum_y) / sum_d2;
+            let residual = sum_sq[i]
+                - sum[i] * sum[i] / n
+                - (sum_x[i] * sum_x[i] + sum_y[i] * sum_y[i]) / sum_d2;
             if residual < max_sum_squares {
-                blocked[y * elevation.width + x] = 1;
+                blocked[y * width + R + i] = 1;
             }
         }
     }
