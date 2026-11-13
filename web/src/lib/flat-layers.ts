@@ -1,3 +1,4 @@
+import { ImageIcon, Satellite } from "lucide-react";
 import {
 	addProtocol,
 	type ExpressionSpecification,
@@ -6,6 +7,7 @@ import {
 	type VectorTileSource,
 } from "maplibre-gl";
 import { Protocol } from "pmtiles";
+import { showSpotPopup } from "#/components/spot-popup";
 
 // The flat-ground layers on the map, from one PMTiles file per tent and
 // season (see lib/map-data.ts; made by pipeline/flatness/src/bin/mapfiles.rs):
@@ -188,15 +190,30 @@ export function showFlat(
 		},
 	});
 
-	// Click an area to see it in Norge i bilder: Kartverket's aerial photos,
-	// sharp enough to see the ground (10–25 cm per pixel), opened in 3D. It
-	// can't be a layer here (its map services need a licence), but its
-	// website is free and takes a box in UTM 33 in its URL.
+	// Click an area for links to check it's real before going: photos of
+	// the ground at the clicked spot.
 	map.on("click", "flat-areas", (event) => {
 		const area = event.features?.[0]?.properties;
 		if (area) {
-			const url = norgeIBilderUrl(area.x, area.y, area.m2);
-			window.open(url, "_blank", "noreferrer");
+			const { lat, lng } = event.lngLat;
+			showSpotPopup(map, event.lngLat, {
+				m2: area.m2,
+				maxSlope: area.limit,
+				lat,
+				lon: lng,
+				links: [
+					{
+						label: "Norge i bilder 3D",
+						url: norgeIBilderUrl(area.x, area.y, area.m2),
+						icon: ImageIcon,
+					},
+					{
+						label: "Google satellite",
+						url: googleSatelliteUrl(lat, lng, 19),
+						icon: Satellite,
+					},
+				],
+			});
 		}
 	});
 	map.on("mouseenter", "flat-areas", () => {
@@ -212,6 +229,11 @@ export function googleSatelliteUrl(lat: number, lon: number, zoom: number) {
 	return `https://www.google.com/maps/@${lat},${lon},${Math.round(zoom)}z/data=!3m1!1e3`;
 }
 
+// Norge i bilder: Kartverket's aerial photos, sharp enough to see the
+// ground (10–25 cm per pixel), opened in 3D. It can't be a layer here (its
+// map services need a licence), but its website is free and takes a box in
+// UTM 33 in its URL.
+//
 // A view around a point given in UTM 33 metres (EPSG:25833), close enough
 // to see the ground: about twice the area across (its side is √m2), at
 // least 80 × 60 m.
