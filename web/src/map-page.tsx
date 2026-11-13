@@ -2,14 +2,12 @@ import { useEffect, useRef, useState } from "react";
 
 import { MapPanel } from "#/components/map-panel";
 import { type Basemap, isBasemap, showBasemap } from "#/lib/basemaps";
-import {
-	googleSatelliteUrl,
-	isSlopeLimit,
-	type SlopeLimit,
-	showFlat,
-} from "#/lib/flat-layers";
+import { isSlopeLimit, type SlopeLimit, showFlat } from "#/lib/flat-layers";
+import { showHillshade } from "#/lib/hillshade";
 import { type Manifest, pmtilesUrl } from "#/lib/map-data";
+import { googleSatelliteUrl } from "#/lib/photo-links";
 import { isSeason, type Season } from "#/lib/seasons";
+import { showTrails } from "#/lib/trails";
 import { type MapView, useMaplibre } from "#/lib/use-maplibre";
 
 // Everything that describes the current view lives in the URL, so a reload or
@@ -20,6 +18,8 @@ type MapSearch = MapView & {
 	season: Season;
 	maxSlope: SlopeLimit; // degrees: the limits the files have
 	minArea: number; // m²: smaller areas with room for the tent are left out
+	trails: boolean; // marked trails: hiking in summer, ski in winter
+	hillshade: boolean; // the 1 m terrain model, lit from the side
 };
 
 const RONDANE: MapSearch = {
@@ -30,6 +30,8 @@ const RONDANE: MapSearch = {
 	season: "summer",
 	maxSlope: 3,
 	minArea: 300,
+	trails: false,
+	hillshade: false,
 };
 
 // A number from the URL; NaN if it's missing or not a number.
@@ -56,6 +58,8 @@ function readSearch(params: URLSearchParams): MapSearch {
 		season: isSeason(season) ? season : RONDANE.season,
 		maxSlope: isSlopeLimit(maxSlope) ? maxSlope : RONDANE.maxSlope,
 		minArea: numberOr(numberIn(params, "minArea"), RONDANE.minArea),
+		trails: params.get("trails") === "true",
+		hillshade: params.get("hillshade") === "true",
 	};
 }
 
@@ -109,6 +113,14 @@ export function MapPage({ manifest }: { manifest: Manifest }) {
 	}, [map, search.basemap]);
 
 	useEffect(() => {
+		if (map) showTrails(map, search.season, search.trails);
+	}, [map, search.season, search.trails]);
+
+	useEffect(() => {
+		if (map) showHillshade(map, search.hillshade);
+	}, [map, search.hillshade]);
+
+	useEffect(() => {
 		const url = tent && pmtilesUrl(manifest, tent, search.season);
 		if (map && url) {
 			showFlat(map, {
@@ -135,6 +147,10 @@ export function MapPage({ manifest }: { manifest: Manifest }) {
 				minArea={search.minArea}
 				onMinAreaChange={(minArea) => setSearch({ minArea })}
 				photoUrl={googleSatelliteUrl(search.lat, search.lon, search.zoom)}
+				trails={search.trails}
+				onTrailsChange={(trails) => setSearch({ trails })}
+				hillshade={search.hillshade}
+				onHillshadeChange={(hillshade) => setSearch({ hillshade })}
 				basemap={search.basemap}
 				onBasemapChange={(basemap) => setSearch({ basemap })}
 				onPlaceSelect={(place) =>

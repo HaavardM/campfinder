@@ -41,6 +41,10 @@ export function basemapStyle(visible: Basemap): StyleSpecification {
 			type: "raster",
 			source: name,
 			layout: { visibility: name === visible ? "visible" : "none" },
+			// No fade-in: on zooming, the sharper tiles replace the enlarged
+			// ones straight away, rather than every tile blending in over
+			// 0.3 s, which looked like the map reloading.
+			paint: { "raster-fade-duration": 0 },
 		})),
 	};
 }

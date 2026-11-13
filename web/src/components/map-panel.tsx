@@ -1,4 +1,10 @@
-import { ChevronDown, Satellite, Tent } from "lucide-react";
+import {
+	ChevronDown,
+	Footprints,
+	Mountain,
+	Satellite,
+	Tent,
+} from "lucide-react";
 import { Collapsible } from "radix-ui";
 import { useState } from "react";
 
@@ -13,6 +19,7 @@ import {
 	SelectValue,
 } from "#/components/ui/select";
 import { Slider } from "#/components/ui/slider";
+import { Toggle } from "#/components/ui/toggle";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { BASEMAPS, type Basemap, isBasemap } from "#/lib/basemaps";
 import {
@@ -38,6 +45,10 @@ type Props = {
 	minArea: number;
 	onMinAreaChange: (minArea: number) => void;
 	photoUrl: string;
+	trails: boolean;
+	onTrailsChange: (trails: boolean) => void;
+	hillshade: boolean;
+	onHillshadeChange: (hillshade: boolean) => void;
 	basemap: Basemap;
 	onBasemapChange: (basemap: Basemap) => void;
 	onPlaceSelect: (place: Place) => void;
@@ -176,6 +187,28 @@ export function MapPanel(props: Props) {
 										<Satellite />
 									</a>
 								</Button>
+								<Toggle
+									variant="outline"
+									size="sm"
+									className="px-2.5"
+									pressed={props.trails}
+									onPressedChange={props.onTrailsChange}
+									title="Marked trails: hiking in summer, ski in winter"
+									aria-label="Trails"
+								>
+									<Footprints />
+								</Toggle>
+								<Toggle
+									variant="outline"
+									size="sm"
+									className="px-2.5"
+									pressed={props.hillshade}
+									onPressedChange={props.onHillshadeChange}
+									title="Terrain shading from the 1 m height model: hummocks and boulders, close up"
+									aria-label="Terrain shading"
+								>
+									<Mountain />
+								</Toggle>
 								<ToggleGroup
 									type="single"
 									variant="outline"

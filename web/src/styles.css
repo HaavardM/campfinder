@@ -87,6 +87,13 @@
   }
 }
 
+/* Where no tile has loaded yet the map is see-through, and the page behind
+   it is near-black in dark mode: blank map colour (Topo's open land)
+   instead, so loading looks like the map filling in. */
+.maplibregl-map {
+  background: #f7f7e6;
+}
+
 /* MapLibre's built-in controls, restyled to match the shadcn panels. */
 .maplibregl-ctrl-group {
   @apply rounded-lg border bg-card;
@@ -119,22 +126,22 @@
 
 /* The flat-area popup (components/spot-popup.tsx), as a shadcn card. The
    tip is a CSS triangle: colour the side that points at the spot. */
-.maplibregl-popup-content {
+.spot-popup .maplibregl-popup-content {
   @apply rounded-lg border bg-popover p-3 text-popover-foreground shadow-lg;
 }
-.maplibregl-popup-anchor-top .maplibregl-popup-tip,
-.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
-.maplibregl-popup-anchor-top-right .maplibregl-popup-tip {
+.spot-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+.spot-popup.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+.spot-popup.maplibregl-popup-anchor-top-right .maplibregl-popup-tip {
   border-bottom-color: var(--popover);
 }
-.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
-.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
-.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip {
+.spot-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+.spot-popup.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+.spot-popup.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip {
   border-top-color: var(--popover);
 }
-.maplibregl-popup-anchor-left .maplibregl-popup-tip {
+.spot-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip {
   border-right-color: var(--popover);
 }
-.maplibregl-popup-anchor-right .maplibregl-popup-tip {
+.spot-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip {
   border-left-color: var(--popover);
 }

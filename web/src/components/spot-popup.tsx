@@ -1,42 +1,67 @@
-import { Check, Copy, ExternalLink, type LucideIcon, X } from "lucide-react";
+import {
+	Check,
+	Copy,
+	ExternalLink,
+	ImageIcon,
+	Satellite,
+	X,
+} from "lucide-react";
 import { type LngLat, type Map as MaplibreMap, Popup } from "maplibre-gl";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Button } from "#/components/ui/button";
+import { googleSatelliteUrl, norgeIBilderUrl } from "#/lib/photo-links";
 
-export type SpotLink = { label: string; url: string; icon: LucideIcon };
-
-type Props = {
-	m2: number;
-	maxSlope: number;
-	lat: number;
-	lon: number;
-	links: SpotLink[];
-	onClose: () => void;
-};
+// A flat area as the map files describe it (pipeline's mapfiles.rs): its
+// size, the slope limit it was found at, and a point inside it in UTM 33
+// metres.
+export type Area = { m2: number; limit: number; x: number; y: number };
 
 // Opens the popup for a flat area at `at`. A click elsewhere on the map
 // closes it. MapLibre owns the popup's box, React draws what's inside.
-export function showSpotPopup(
-	map: MaplibreMap,
-	at: LngLat,
-	props: Omit<Props, "onClose">,
-) {
+export function showSpotPopup(map: MaplibreMap, at: LngLat, area: Area) {
 	const container = document.createElement("div");
 	const root = createRoot(container);
-	const popup = new Popup({ closeButton: false, maxWidth: "none", offset: 8 })
+	const popup = new Popup({
+		className: "spot-popup",
+		closeButton: false,
+		maxWidth: "none",
+		offset: 8,
+	})
 		.setLngLat(at)
 		.setDOMContent(container)
 		.addTo(map);
 	// Not straight away: the close can come from a click React is handling.
 	popup.on("close", () => queueMicrotask(() => root.unmount()));
-	root.render(<SpotPopup {...props} onClose={() => popup.remove()} />);
+	root.render(<SpotPopup area={area} at={at} onClose={() => popup.remove()} />);
 }
 
-function SpotPopup({ m2, maxSlope, lat, lon, links, onClose }: Props) {
+function SpotPopup({
+	area,
+	at,
+	onClose,
+}: {
+	area: Area;
+	at: LngLat;
+	onClose: () => void;
+}) {
 	const [copied, setCopied] = useState(false);
+	// Photos of the ground: Norge i bilder's are the sharpest; Google's are
+	// often from another year or season.
+	const links = [
+		{
+			label: "Norge i bilder 3D",
+			url: norgeIBilderUrl(area.x, area.y, area.m2),
+			icon: ImageIcon,
+		},
+		{
+			label: "Google satellite",
+			url: googleSatelliteUrl(at.lat, at.lng, 19),
+			icon: Satellite,
+		},
+	];
 	// Latitude, longitude: what GPS units, Google and inReach take.
-	const coordinates = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+	const coordinates = `${at.lat.toFixed(5)}, ${at.lng.toFixed(5)}`;
 	const copy = () =>
 		// Fails without HTTPS (e.g. the dev server opened from a phone);
 		// the coordinates are on the button to read off anyway.
@@ -53,10 +78,10 @@ function SpotPopup({ m2, maxSlope, lat, lon, links, onClose }: Props) {
 			<div className="flex items-start gap-2">
 				<div className="flex-1">
 					<div className="font-semibold">
-						{m2.toLocaleString()} m² of flat ground
+						{area.m2.toLocaleString()} m² of flat ground
 					</div>
 					<div className="text-muted-foreground text-xs">
-						Slopes up to {maxSlope}° under the tent
+						Slopes up to {area.limit}° under the tent
 					</div>
 				</div>
 				<Button
