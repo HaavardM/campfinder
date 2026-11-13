@@ -25,10 +25,11 @@ flatness/target/release/mapfiles geojson "$build"
 # One tippecanoe per tent and season, all at once (each is partly serial).
 # -Z/-z: zoom 5 to 16; the features say which zooms they belong to. -r1 and
 # the no-limit flags: keep every feature at every zoom, the data already
-# has the right detail per zoom.
+# has the right detail per zoom. -t: temporary files next to the output,
+# not in /tmp, which can be a few GB of RAM (tmpfs) and too small.
 for points in "$build"/*.points.geojsonl; do
   name=$(basename "$points" .points.geojsonl) # keron-4-gt.summer
-  tippecanoe --quiet --force --read-parallel -Z5 -z16 -r1 \
+  tippecanoe --quiet --force --read-parallel -Z5 -z16 -r1 -t "$build" \
     --no-feature-limit --no-tile-size-limit --no-tile-stats \
     -L "scores:$points" -L "areas:$build/$name.areas.geojsonl" \
     -o "$build/$name.pmtiles" &
