@@ -1,0 +1,6 @@
+@import "../theme.css";
+
+/* The 3D view fills the window; the panel floats on top. */
+#scene {
+	@apply fixed inset-0 block size-full;
+}

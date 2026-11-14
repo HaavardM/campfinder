@@ -15,7 +15,9 @@ pnpm install
 pnpm dev                                    # http://localhost:3000
 ```
 
-The dev server serves `pipeline/data/map/` as `/map`. See
+The dev server serves `pipeline/data/map/` as `/map`. The true-size 3D
+view of our tent is a second page, at `/tent` (code in
+[web/src/tent](web/src/tent)). See
 [pipeline/README.md](pipeline/README.md) for what the pipeline needs and does.
 
 ## Put it online

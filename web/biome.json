@@ -10,9 +10,10 @@
 		"includes": [
 			"**/src/**/*",
 			"**/.vscode/**/*",
-			"**/index.html",
+			"**/*.html",
 			"**/vite.config.ts",
-			"!**/src/styles.css"
+			"!**/*.css",
+			"!dist"
 		]
 	},
 	"formatter": {

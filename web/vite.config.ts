@@ -19,7 +19,13 @@ function localMapFiles(): Plugin {
 	};
 }
 
+// Two pages: the map (/) and the true-size tent viewer (/tent).
 export default defineConfig({
 	resolve: { tsconfigPaths: true },
 	plugins: [localMapFiles(), tailwindcss(), viteReact()],
+	build: {
+		rollupOptions: {
+			input: { map: "index.html", tent: "tent.html" },
+		},
+	},
 });
