@@ -1,5 +1,5 @@
 import { cn } from "cn";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { controls } from "#/tent/scene";
 
@@ -11,6 +11,8 @@ const REACH = SIZE / 2 - 20; // how far the knob can move from the centre
 // `raised` moves it up out of the way of the measurements at the bottom.
 export function Joystick(props: { raised: boolean }) {
 	const [knob, setKnob] = useState({ x: 0, y: 0 });
+	// Gone while still held (another finger switched the view): stop.
+	useEffect(() => () => controls.setStick(0, 0), []);
 
 	function move(e: React.PointerEvent<HTMLDivElement>) {
 		const box = e.currentTarget.getBoundingClientRect();

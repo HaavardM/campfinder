@@ -115,6 +115,7 @@ export function buildWalk(
 			camera.position.set(at.x, eye, at.z);
 			camera.lookAt(lookAt);
 			heading = null;
+			if (gyro) window.addEventListener("deviceorientation", readTilt);
 			// Browsers only let a page grab the mouse right after a click;
 			// otherwise wait for the click on the view. Touch screens look by
 			// dragging instead.
@@ -123,6 +124,8 @@ export function buildWalk(
 		exit() {
 			walk.active = false;
 			controls.unlock();
+			// Gyro look stays chosen for next time, but the sensors can rest.
+			window.removeEventListener("deviceorientation", readTilt);
 		},
 		update(dt) {
 			if (!walk.active) return;
@@ -154,7 +157,10 @@ export function buildWalk(
 		async setGyro(on) {
 			const event = DeviceOrientationEvent as AskingOrientationEvent;
 			if (on && event.requestPermission) {
-				if ((await event.requestPermission()) !== "granted") return false;
+				// Rejects rather than says no on an insecure page, or when the
+				// tap that asked was too long ago.
+				const answer = await event.requestPermission().catch(() => "denied");
+				if (answer !== "granted") return false;
 			}
 			if (on) window.addEventListener("deviceorientation", readTilt);
 			else window.removeEventListener("deviceorientation", readTilt);
@@ -173,6 +179,8 @@ export function buildWalk(
 		if (e.code === "Escape" && controls.isLocked) controls.unlock();
 	});
 	window.addEventListener("keyup", (e) => keys.delete(e.code));
+	// A key let go in another window never sends its keyup here.
+	window.addEventListener("blur", () => keys.clear());
 	// Click the view to grab the mouse again after Esc.
 	element.addEventListener("click", () => {
 		if (!touchOnly && walk.active && !controls.isLocked) controls.lock();
@@ -180,15 +188,16 @@ export function buildWalk(
 
 	// On a touch screen, drag a finger across the view to look around:
 	// sideways turns, up and down tilts, as far as straight up or down.
-	// With gyro look the phone tilts; a drag only turns you round.
-	let last: { x: number; y: number } | null = null;
+	// With gyro look the phone tilts; a drag only turns you round. Only the
+	// first finger looks; a second one resting on the screen is ignored.
+	let last: { id: number; x: number; y: number } | null = null;
 	element.addEventListener("pointerdown", (e) => {
-		if (!walk.active || e.pointerType !== "touch") return;
-		last = { x: e.clientX, y: e.clientY };
+		if (!walk.active || e.pointerType !== "touch" || last) return;
+		last = { id: e.pointerId, x: e.clientX, y: e.clientY };
 		element.setPointerCapture(e.pointerId);
 	});
 	element.addEventListener("pointermove", (e) => {
-		if (!last || e.pointerType !== "touch") return;
+		if (e.pointerId !== last?.id) return;
 		const dx = (e.clientX - last.x) * 0.005;
 		const dy = (e.clientY - last.y) * 0.005;
 		if (gyro && heading !== null) {
@@ -197,12 +206,16 @@ export function buildWalk(
 			look.setFromQuaternion(camera.quaternion);
 			look.y += dx;
 			look.x = THREE.MathUtils.clamp(look.x + dy, -Math.PI / 2, Math.PI / 2);
+			// Level: no roll left over from holding the phone tilted.
+			look.z = 0;
 			camera.quaternion.setFromEuler(look);
 		}
-		last = { x: e.clientX, y: e.clientY };
+		last = { id: e.pointerId, x: e.clientX, y: e.clientY };
 	});
-	element.addEventListener("pointerup", () => {
-		last = null;
-	});
+	function letGo(e: PointerEvent) {
+		if (e.pointerId === last?.id) last = null;
+	}
+	element.addEventListener("pointerup", letGo);
+	element.addEventListener("pointercancel", letGo);
 	return walk;
 }

@@ -36,6 +36,7 @@ import {
 	buildTent,
 	FABRIC_LAYER,
 	heightAt,
+	inOpenDoor,
 	onWall,
 	throughFabric,
 } from "./tent";
@@ -108,6 +109,11 @@ scene.add(grid);
 const BAG = "#8e2a22";
 const theStove = stove();
 const cots = [cot(false, BAG), cot(false, BAG)];
+// Each cot on its leg extensions, built up front: the switch swaps the
+// insides of the two rather than rebuilding, so there is nothing to free
+// and nothing new to compile.
+const raisedCots = [cot(true, BAG), cot(true, BAG)];
+let onLegKit = false;
 const yourChair = chair("#3e5872");
 const partnersChair = chair("#7a4b2a");
 
@@ -278,9 +284,10 @@ let line: THREE.Group;
 // The lantern hangs from the roof: at the top with the stove up, and in summer
 // right above the big table, to light it for cooking and eating. It is
 // built hanging from the apex, so lower it by how much lower the roof is
-// where it hangs.
+// where it hangs. With the table carried outside, back to the top.
 function hangLantern() {
-	const at = season === "summer" ? bigTable.position : new THREE.Vector3();
+	let at = season === "summer" ? bigTable.position : new THREE.Vector3();
+	if (heightAt(at.x, at.z) <= 0) at = new THREE.Vector3();
 	hanging.group.position.set(at.x, heightAt(at.x, at.z) - TENT.radius, at.z);
 }
 
@@ -391,8 +398,12 @@ const raycaster = new THREE.Raycaster();
 const floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const pointer = new THREE.Vector2();
 const grabOffset = new THREE.Vector3();
+// The fabric is on its own layer; picking tests it too, so it hides what
+// is behind it.
+raycaster.layers.enable(FABRIC_LAYER);
 let selected: Item | null = null;
-let dragging = false;
+// The pointer (mouse button or finger) dragging the selected item.
+let dragPointer: number | null = null;
 const outline = new THREE.BoxHelper(new THREE.Object3D(), "#f2c14e");
 outline.visible = false;
 scene.add(outline);
@@ -427,15 +438,21 @@ function moved(it: Item) {
 	showInfo();
 }
 
+// Only the left button or a first finger picks: the other buttons pan,
+// and a second finger pinches to zoom.
 canvas.addEventListener("pointerdown", (e) => {
-	if (firstPerson()) return;
+	if (firstPerson() || !e.isPrimary || e.button !== 0) return;
 	const at = floorPoint(e);
-	const shown = items.filter((it) => it.visible);
-	const hit = raycaster.intersectObjects(shown, true)[0];
-	select(hit ? owner(hit.object) : null);
+	const shown: THREE.Object3D[] = items.filter((it) => it.visible);
+	// Opaque fabric hides the gear inside, except through an open door.
+	if (!seeThrough && view !== "plan") shown.push(tent.fabric);
+	const hit = raycaster
+		.intersectObjects(shown, true)
+		.find((h) => h.object !== tent.fabric || !inOpenDoor(h.point));
+	select(hit && hit.object !== tent.fabric ? owner(hit.object) : null);
 	if (selected && at) {
 		grabOffset.copy(selected.position).sub(at);
-		dragging = true;
+		dragPointer = e.pointerId;
 		orbit.enabled = false;
 		planControls.enabled = false;
 		canvas.setPointerCapture(e.pointerId);
@@ -443,19 +460,22 @@ canvas.addEventListener("pointerdown", (e) => {
 });
 
 canvas.addEventListener("pointermove", (e) => {
-	if (!dragging || !selected) return;
+	if (e.pointerId !== dragPointer || !selected) return;
 	const at = floorPoint(e);
 	if (!at) return;
 	selected.position.set(at.x + grabOffset.x, 0, at.z + grabOffset.z);
 	moved(selected);
 });
 
-canvas.addEventListener("pointerup", () => {
-	if (!dragging) return;
-	dragging = false;
+// Cancelled too, as when iOS takes over the touch for a swipe.
+function drop(e: PointerEvent) {
+	if (e.pointerId !== dragPointer) return;
+	dragPointer = null;
 	orbit.enabled = view === "outside";
 	planControls.enabled = view === "plan";
-});
+}
+canvas.addEventListener("pointerup", drop);
+canvas.addEventListener("pointercancel", drop);
 
 // Turn the selected item, in steps of 15°: Q and E on a keyboard, buttons
 // in the panel on a touch screen.
@@ -622,17 +642,19 @@ export const controls = {
 		if (view === "sit" || view === "lie") setView(view);
 		else showPeople();
 	},
-	// Rebuild both cots with or without the leg extensions, in place, so
-	// everything holding on to them keeps working.
+	// Swap the insides of each cot with its spare (see raisedCots), so
+	// everything holding on to the cots keeps working.
 	setLegKit(on: boolean) {
+		if (on === onLegKit) return;
+		onLegKit = on;
 		walk.bedHeight = on ? COT.heightWithLegs : COT.heightLow;
-		for (const old of cots) {
-			const fresh = cot(on, BAG);
-			dispose(old);
-			old.clear();
-			old.add(...fresh.children);
-			old.userData = fresh.userData;
-		}
+		cots.forEach((shown, i) => {
+			const spare = raisedCots[i];
+			const parts = [...shown.children];
+			shown.clear().add(...spare.children);
+			spare.add(...parts);
+			[shown.userData, spare.userData] = [spare.userData, shown.userData];
+		});
 		if (selected) moved(selected);
 		else redrawShadows();
 	},
@@ -658,19 +680,6 @@ export const controls = {
 		redrawShadows();
 	},
 };
-
-// Free the GPU memory of everything under `object`.
-function dispose(object: THREE.Object3D) {
-	object.traverse((o) => {
-		if (!(o instanceof THREE.Mesh)) return;
-		o.geometry.dispose();
-		for (const m of [o.material].flat() as THREE.MeshStandardMaterial[]) {
-			m.map?.dispose();
-			m.bumpMap?.dispose();
-			m.dispose();
-		}
-	});
-}
 
 // ---------------------------------------------------------------- loop
 

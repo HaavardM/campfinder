@@ -197,6 +197,13 @@ export const FABRIC_LAYER = 1;
 // Which doors are open: x is the front door (+x), y the back door (-x).
 const doorsOpen = { value: new THREE.Vector2(0, 0) };
 
+// Is point `p` on the fabric inside an open door, where the shader cuts a
+// hole? For picking through it. The doors face ±x.
+export function inOpenDoor(p: THREE.Vector3): boolean {
+	const open = p.x > 0 ? doorsOpen.value.x : doorsOpen.value.y;
+	return open > 0.5 && inDoor(Math.atan2(p.z, p.x), p.y);
+}
+
 // Light coming through the fabric, set by lighting.ts for the time of day:
 // where the sun is, and how much sun and sky light gets through.
 export const throughFabric = {
