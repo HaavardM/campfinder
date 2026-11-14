@@ -3,4 +3,6 @@
 /* The 3D view fills the window; the panel floats on top. */
 #scene {
 	@apply fixed inset-0 block size-full;
+	/* Finger drags look around or move gear: don't scroll or zoom the page. */
+	touch-action: none;
 }

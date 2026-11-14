@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
 import { COT, EYES, PEOPLE } from "./specs";
+import { touchOnly } from "./touch";
 
 // First person: look with the mouse, and walk with WASD when standing.
 // Each view sets the pose: standing, sitting in a chair, or lying on a cot.
@@ -27,6 +28,21 @@ export type Walk = {
 	exit(): void;
 	update(dt: number): void;
 	isLocked(): boolean;
+	// The on-screen joystick on a touch screen: x to the right, y forward,
+	// each from -1 to 1.
+	setStick(x: number, y: number): void;
+	// Look around by turning the phone itself. Resolves to whether it is
+	// on: iPhones ask for permission first, which needs a tap.
+	setGyro(on: boolean): Promise<boolean>;
+};
+
+// The phone's tilt as the browser reports it, in degrees.
+type Orientation = { alpha: number; beta: number; gamma: number };
+
+// iPhones ask before giving a page the phone's tilt; the method is missing
+// from the DOM types.
+type AskingOrientationEvent = typeof DeviceOrientationEvent & {
+	requestPermission?: () => Promise<"granted" | "denied">;
 };
 
 export function buildWalk(
@@ -43,9 +59,48 @@ export function buildWalk(
 		return (EYES[walk.pose] * walk.height) / PEOPLE.you;
 	}
 
+	const stick = new THREE.Vector2();
 	const forward = new THREE.Vector3();
 	const right = new THREE.Vector3();
 	const move = new THREE.Vector3();
+
+	// Gyro look. The browser gives the phone's tilt as angles from lying
+	// flat, screen up, with its top pointing at alpha. Turn that into where
+	// the back camera would point, then turn the whole world by `heading` so
+	// that switching it on, or a new view, keeps the way you were looking.
+	let gyro = false;
+	let tilt: Orientation | null = null;
+	let heading: number | null = null;
+	const phone = new THREE.Quaternion();
+	const phoneEuler = new THREE.Euler();
+	// Lying flat the screen faces up; the camera should look out of the back
+	// of the phone held upright, so tip it up 90° about its side.
+	const upright = new THREE.Quaternion(-Math.SQRT1_2, 0, 0, Math.SQRT1_2);
+	const screenTurn = new THREE.Quaternion();
+	const yAxis = new THREE.Vector3(0, 1, 0);
+	const zAxis = new THREE.Vector3(0, 0, 1);
+	const look = new THREE.Euler(0, 0, 0, "YXZ");
+	// Only listened to while gyro look is on: on Android the sensors run as
+	// long as anyone listens.
+	function readTilt(e: DeviceOrientationEvent) {
+		if (e.alpha === null || e.beta === null || e.gamma === null) return;
+		tilt = { alpha: e.alpha, beta: e.beta, gamma: e.gamma };
+	}
+
+	function lookWithPhone() {
+		if (!tilt) return;
+		const d = THREE.MathUtils.degToRad;
+		phoneEuler.set(d(tilt.beta), d(tilt.alpha), -d(tilt.gamma), "YXZ");
+		phone.setFromEuler(phoneEuler).multiply(upright);
+		// Held sideways, the screen is turned against the phone.
+		const angle = d(screen.orientation?.angle ?? 0);
+		phone.multiply(screenTurn.setFromAxisAngle(zAxis, -angle));
+		if (heading === null) {
+			const want = look.setFromQuaternion(camera.quaternion).y;
+			heading = want - look.setFromQuaternion(phone).y;
+		}
+		camera.quaternion.setFromAxisAngle(yAxis, heading).multiply(phone);
+	}
 
 	const walk: Walk = {
 		active: false,
@@ -59,9 +114,11 @@ export function buildWalk(
 			eye = targetEye();
 			camera.position.set(at.x, eye, at.z);
 			camera.lookAt(lookAt);
+			heading = null;
 			// Browsers only let a page grab the mouse right after a click;
-			// otherwise wait for the click on the view.
-			if (navigator.userActivation?.isActive) controls.lock();
+			// otherwise wait for the click on the view. Touch screens look by
+			// dragging instead.
+			if (!touchOnly && navigator.userActivation?.isActive) controls.lock();
 		},
 		exit() {
 			walk.active = false;
@@ -69,6 +126,7 @@ export function buildWalk(
 		},
 		update(dt) {
 			if (!walk.active) return;
+			if (gyro) lookWithPhone();
 			if (!seated) {
 				camera.getWorldDirection(forward);
 				forward.y = 0;
@@ -79,8 +137,10 @@ export function buildWalk(
 				if (keys.has("KeyS")) move.sub(forward);
 				if (keys.has("KeyD")) move.add(right);
 				if (keys.has("KeyA")) move.sub(right);
+				move.addScaledVector(forward, stick.y).addScaledVector(right, stick.x);
+				// Full speed at full stick, slower with the stick part way.
 				if (move.lengthSq() > 0) {
-					camera.position.addScaledVector(move.normalize(), SPEED * dt);
+					camera.position.addScaledVector(move.clampLength(0, 1), SPEED * dt);
 				}
 			}
 			// Ease towards the eye height of the chosen pose.
@@ -88,6 +148,21 @@ export function buildWalk(
 			camera.position.y = eye;
 		},
 		isLocked: () => controls.isLocked,
+		setStick(x, y) {
+			stick.set(x, y);
+		},
+		async setGyro(on) {
+			const event = DeviceOrientationEvent as AskingOrientationEvent;
+			if (on && event.requestPermission) {
+				if ((await event.requestPermission()) !== "granted") return false;
+			}
+			if (on) window.addEventListener("deviceorientation", readTilt);
+			else window.removeEventListener("deviceorientation", readTilt);
+			gyro = on;
+			tilt = null;
+			heading = null;
+			return on;
+		},
 	};
 
 	window.addEventListener("keydown", (e) => {
@@ -100,7 +175,34 @@ export function buildWalk(
 	window.addEventListener("keyup", (e) => keys.delete(e.code));
 	// Click the view to grab the mouse again after Esc.
 	element.addEventListener("click", () => {
-		if (walk.active && !controls.isLocked) controls.lock();
+		if (!touchOnly && walk.active && !controls.isLocked) controls.lock();
+	});
+
+	// On a touch screen, drag a finger across the view to look around:
+	// sideways turns, up and down tilts, as far as straight up or down.
+	// With gyro look the phone tilts; a drag only turns you round.
+	let last: { x: number; y: number } | null = null;
+	element.addEventListener("pointerdown", (e) => {
+		if (!walk.active || e.pointerType !== "touch") return;
+		last = { x: e.clientX, y: e.clientY };
+		element.setPointerCapture(e.pointerId);
+	});
+	element.addEventListener("pointermove", (e) => {
+		if (!last || e.pointerType !== "touch") return;
+		const dx = (e.clientX - last.x) * 0.005;
+		const dy = (e.clientY - last.y) * 0.005;
+		if (gyro && heading !== null) {
+			heading += dx;
+		} else {
+			look.setFromQuaternion(camera.quaternion);
+			look.y += dx;
+			look.x = THREE.MathUtils.clamp(look.x + dy, -Math.PI / 2, Math.PI / 2);
+			camera.quaternion.setFromEuler(look);
+		}
+		last = { x: e.clientX, y: e.clientY };
+	});
+	element.addEventListener("pointerup", () => {
+		last = null;
 	});
 	return walk;
 }

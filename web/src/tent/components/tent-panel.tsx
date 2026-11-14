@@ -11,6 +11,7 @@ import {
 	Moon,
 	Mountain,
 	RotateCcw,
+	RotateCw,
 	Snowflake,
 	Sun,
 	Sunset,
@@ -27,6 +28,7 @@ import type { TimeOfDay } from "#/tent/lighting";
 import { controls, type Info, listeners, type View } from "#/tent/scene";
 import { COT, cm, PEOPLE } from "#/tent/specs";
 import { HEADROOM } from "#/tent/tent";
+import { touchOnly } from "#/tent/touch";
 
 const VIEWS: [View, string, typeof Mountain][] = [
 	["outside", "Outside", Mountain],
@@ -68,7 +70,10 @@ export function TentPanel() {
 	const fullscreen = useFullscreen();
 	// Folded down while you look around with the mouse; open again when Esc
 	// frees the mouse to use it.
-	const [panelOpen, setPanelOpen] = useState(true);
+	// Folded at first on a phone, where it would cover most of the view.
+	const [panelOpen, setPanelOpen] = useState(
+		() => !window.matchMedia("(max-width: 640px)").matches,
+	);
 	useEffect(() => {
 		const update = () => setPanelOpen(document.pointerLockElement === null);
 		document.addEventListener("pointerlockchange", update);
@@ -241,25 +246,29 @@ export function TentPanel() {
 
 				<div className="flex items-center gap-2">
 					<p className="flex-1 text-xs text-muted-foreground">
-						{firstPerson
-							? "Esc frees the mouse to use this panel."
-							: "Drag gear to move it, Q / E to turn it."}
+						{/* Looking around on a phone is explained at the bottom. */}
+						{!firstPerson
+							? "Drag gear to move it."
+							: !touchOnly && "Esc frees the mouse to use this panel."}
 					</p>
 					<Button asChild variant="secondary" size="sm" className="px-2.5">
 						<a href="/" title="Back to the map" aria-label="Map">
 							<MapIcon />
 						</a>
 					</Button>
-					<Button
-						variant="secondary"
-						size="sm"
-						className="px-2.5"
-						onClick={fullscreen.toggle}
-						title={fullscreen.on ? "Leave full screen" : "Full screen"}
-						aria-label="Full screen"
-					>
-						{fullscreen.on ? <Minimize /> : <Maximize />}
-					</Button>
+					{/* iPhones don't let a page go full screen. */}
+					{document.fullscreenEnabled && (
+						<Button
+							variant="secondary"
+							size="sm"
+							className="px-2.5"
+							onClick={fullscreen.toggle}
+							title={fullscreen.on ? "Leave full screen" : "Full screen"}
+							aria-label="Full screen"
+						>
+							{fullscreen.on ? <Minimize /> : <Maximize />}
+						</Button>
+					)}
 					<Button variant="secondary" size="sm" onClick={controls.reset}>
 						<RotateCcw />
 						Reset
@@ -320,7 +329,28 @@ function Measurements({ info }: { info: Info }) {
 		<div className="flex flex-col gap-1.5 rounded-md border p-3 text-sm">
 			{info.selected ? (
 				<>
-					<span className="font-medium">{info.selected.name}</span>
+					<div className="flex items-center gap-2">
+						<span className="flex-1 font-medium">{info.selected.name}</span>
+						{/* Q and E on a keyboard. */}
+						<Button
+							variant="outline"
+							size="icon-sm"
+							onClick={() => controls.turnSelected(1)}
+							title="Turn left (Q)"
+							aria-label="Turn left"
+						>
+							<RotateCcw />
+						</Button>
+						<Button
+							variant="outline"
+							size="icon-sm"
+							onClick={() => controls.turnSelected(-1)}
+							title="Turn right (E)"
+							aria-label="Turn right"
+						>
+							<RotateCw />
+						</Button>
+					</div>
 					<span className="text-xs text-muted-foreground">
 						{info.selected.size}
 					</span>

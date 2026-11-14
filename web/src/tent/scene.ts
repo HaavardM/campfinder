@@ -40,13 +40,16 @@ import {
 	throughFabric,
 	wallRadius,
 } from "./tent";
+import { touchOnly } from "./touch";
 import { buildWalk } from "./walk";
 
 // ---------------------------------------------------------------- scene
 
 const canvas = document.querySelector("#scene") as HTMLCanvasElement;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// Phones have very dense screens and modest GPUs: 1.5 looks as sharp there
+// and keeps it smooth.
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, touchOnly ? 1.5 : 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // Nothing casting a shadow moves on its own, so shadows are only redrawn
@@ -61,7 +64,9 @@ function redrawShadows() {
 const scene = new THREE.Scene();
 
 // Near plane of 2 cm so you can put your face right up to the fabric.
-const camera = new THREE.PerspectiveCamera(70, 1, 0.02, 30000);
+// Degrees up and down; resize() widens it on an upright phone.
+const FOV = 70;
+const camera = new THREE.PerspectiveCamera(FOV, 1, 0.02, 30000);
 camera.position.set(7, 3.2, 6);
 camera.layers.enable(FABRIC_LAYER);
 
@@ -334,7 +339,7 @@ function setView(next: View) {
 	orbit.enabled = next === "outside";
 	planControls.enabled = next === "plan";
 	showPeople();
-	// Walking: in the middle, in front of the drying line, looking at the
+	// Walking: near the middle, in front of the drying line, looking at the
 	// stove by the back door.
 	// Sitting: in your chair, over the middle of its seat, looking at the
 	// stove in fall and winter and across the table at the other one of you
@@ -343,7 +348,14 @@ function setView(next: View) {
 	const other = walkingAs === "you" ? partnersChair : yourChair;
 	const across = other.position.clone().setY(1.0);
 	if (next === "walk") {
-		walk.enter(new THREE.Vector3(0.05, 0, 0), stoveFront, "standing", false);
+		// Beside the lantern rather than under it, looking almost level
+		// towards the back wall, with the stove in the lower half of the view.
+		walk.enter(
+			new THREE.Vector3(0.05, 0, 0.45),
+			new THREE.Vector3(-2, 1.4, 0),
+			"standing",
+			false,
+		);
 	} else if (next === "sit") {
 		const chair = walkingAs === "you" ? yourChair : partnersChair;
 		const seat = chair.localToWorld(new THREE.Vector3(-0.05, 0, 0));
@@ -450,14 +462,19 @@ canvas.addEventListener("pointerup", () => {
 	planControls.enabled = view === "plan";
 });
 
+// Turn the selected item, in steps of 15°: Q and E on a keyboard, buttons
+// in the panel on a touch screen.
+function turnSelected(direction: 1 | -1) {
+	if (!selected || firstPerson()) return;
+	selected.rotation.y += direction * THREE.MathUtils.degToRad(15);
+	moved(selected);
+}
+
 window.addEventListener("keydown", (e) => {
 	if (!selected || firstPerson()) return;
-	const step = THREE.MathUtils.degToRad(15);
-	if (e.code === "KeyQ") selected.rotation.y += step;
-	else if (e.code === "KeyE") selected.rotation.y -= step;
-	else if (e.code === "Escape") return select(null);
-	else return;
-	moved(selected);
+	if (e.code === "KeyQ") turnSelected(1);
+	else if (e.code === "KeyE") turnSelected(-1);
+	else if (e.code === "Escape") select(null);
 });
 
 // The item a clicked mesh belongs to.
@@ -660,6 +677,9 @@ function buildComposer(): EffectComposer {
 
 export const controls = {
 	setView,
+	turnSelected,
+	setStick: walk.setStick,
+	setGyro: walk.setGyro,
 	setSeason,
 	setTime(time: TimeOfDay) {
 		lighting.set(time);
@@ -744,6 +764,15 @@ function resize() {
 	const aspect = w / h;
 	renderer.setSize(w, h, false);
 	camera.aspect = aspect;
+	// On an upright phone 70° up and down leaves only a narrow slice
+	// sideways, as if zoomed in: widen it to show at least 65° across, but
+	// no more than 95° up and down, or the edges stretch and you see the
+	// roof and your feet at once.
+	const across = THREE.MathUtils.degToRad(65);
+	const fitAcross = THREE.MathUtils.radToDeg(
+		2 * Math.atan(Math.tan(across / 2) / aspect),
+	);
+	camera.fov = THREE.MathUtils.clamp(fitAcross, FOV, 95);
 	camera.updateProjectionMatrix();
 	// Plan shows 5.4 m across the short side of the screen.
 	const half = 2.7;
