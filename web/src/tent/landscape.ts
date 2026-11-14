@@ -11,6 +11,11 @@ import { fbm, random } from "./noise";
 // snow on their tops. Heights are metres above the tent site.
 
 const WATER_LEVEL = -3.2;
+
+// The same place in three seasons: green in summer, browning heather in
+// fall, under snow with frozen tarns in winter.
+export const SEASONS = ["summer", "fall", "winter"] as const;
+export type Season = (typeof SEASONS)[number];
 const smoothstep = THREE.MathUtils.smoothstep;
 
 function groundHeight(x: number, z: number): number {
@@ -37,20 +42,55 @@ function groundHeight(x: number, z: number): number {
 	return height;
 }
 
+// Ground colours. Summer and fall share the layout (lichen, heather, dwarf
+// birch in patches) with greener or browner shades; winter is snow.
+const C = (hex: string) => new THREE.Color(hex);
+const VEGETATION = {
+	summer: {
+		lichen: C("#a7ad78"),
+		heather: C("#6c7a48"),
+		dwarfBirch: C("#55733a"),
+	},
+	fall: {
+		lichen: C("#b9b590"),
+		heather: C("#6e5e4c"),
+		dwarfBirch: C("#6d7343"),
+	},
+};
 const COLOURS = {
-	lichen: new THREE.Color("#b9b590"),
-	heather: new THREE.Color("#6e5e4c"),
-	dwarfBirch: new THREE.Color("#6d7343"),
-	scree: new THREE.Color("#7d7b74"),
-	snow: new THREE.Color("#eef1f4"),
-	shore: new THREE.Color("#5d5848"),
+	scree: C("#7d7b74"),
+	snow: C("#eef1f4"),
+	shadedSnow: C("#d9e1ea"),
+	shore: C("#5d5848"),
 };
 
-function groundColour(x: number, z: number, y: number, out: THREE.Color) {
+function groundColour(
+	x: number,
+	z: number,
+	y: number,
+	season: Season,
+	out: THREE.Color,
+) {
 	const patch = fbm(x / 7, z / 7, 3, 11);
 	const patch2 = fbm(x / 30, z / 30, 3, 13);
-	out.copy(COLOURS.lichen).lerp(COLOURS.heather, smoothstep(patch, 0.4, 0.62));
-	out.lerp(COLOURS.dwarfBirch, smoothstep(patch2, 0.55, 0.7) * 0.8);
+
+	if (season === "winter") {
+		// Snow over everything, a little bluer in hollows and drifts, with
+		// dark rock where the wind keeps ridges bare.
+		out
+			.copy(COLOURS.snow)
+			.lerp(COLOURS.shadedSnow, smoothstep(patch2, 0.45, 0.7));
+		out.multiplyScalar(0.94 + 0.06 * patch);
+		const ridge = fbm(x / 40, z / 40, 3, 41);
+		if (Math.hypot(x, z) > 40) {
+			out.lerp(COLOURS.scree, 0.6 * smoothstep(ridge, 0.66, 0.72));
+		}
+		return out;
+	}
+
+	const v = VEGETATION[season];
+	out.copy(v.lichen).lerp(v.heather, smoothstep(patch, 0.4, 0.62));
+	out.lerp(v.dwarfBirch, smoothstep(patch2, 0.55, 0.7) * 0.8);
 
 	if (y < WATER_LEVEL + 0.6) out.lerp(COLOURS.shore, 0.7);
 
@@ -70,15 +110,14 @@ function groundColour(x: number, z: number, y: number, out: THREE.Color) {
 
 // The ground is a disc of rings that get further apart with distance: fine
 // detail around the tent, coarse far away where it is only a few pixels.
-function buildGround(): THREE.Mesh {
+//
+// Its colours depend on the season; each season's are worked out the first
+// time it is shown, then kept.
+function buildGround() {
 	const around = 400;
 	const rings = 230;
 	const positions: number[] = [0, 0, 0];
-	const colours: number[] = [];
 	const indices: number[] = [];
-	const c = new THREE.Color();
-	groundColour(0, 0, 0, c);
-	colours.push(c.r, c.g, c.b);
 
 	for (let j = 0; j < rings; j++) {
 		const r = 0.6 * 1.045 ** j;
@@ -88,8 +127,6 @@ function buildGround(): THREE.Mesh {
 			const z = r * Math.sin(a);
 			const y = groundHeight(x, z);
 			positions.push(x, y, z);
-			groundColour(x, z, y, c);
-			colours.push(c.r, c.g, c.b);
 		}
 	}
 	// The centre fan, then quads between rings.
@@ -109,7 +146,8 @@ function buildGround(): THREE.Mesh {
 		"position",
 		new THREE.Float32BufferAttribute(positions, 3),
 	);
-	geometry.setAttribute("color", new THREE.Float32BufferAttribute(colours, 3));
+	const colours = new THREE.Float32BufferAttribute(positions.length, 3);
+	geometry.setAttribute("color", colours);
 	geometry.setIndex(indices);
 	geometry.computeVertexNormals();
 	const mesh = new THREE.Mesh(
@@ -117,16 +155,43 @@ function buildGround(): THREE.Mesh {
 		new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 }),
 	);
 	mesh.receiveShadow = true;
-	return mesh;
+
+	const at = geometry.attributes.position;
+	const cache = new Map<Season, Float32Array>();
+	const c = new THREE.Color();
+	// Work out a season's colours, once.
+	function prepare(season: Season): Float32Array {
+		let array = cache.get(season);
+		if (!array) {
+			array = new Float32Array(at.count * 3);
+			for (let i = 0; i < at.count; i++) {
+				groundColour(at.getX(i), at.getZ(i), at.getY(i), season, c);
+				c.toArray(array, i * 3);
+			}
+			cache.set(season, array);
+		}
+		return array;
+	}
+	function setSeason(season: Season) {
+		colours.copyArray(prepare(season));
+		colours.needsUpdate = true;
+	}
+	return { mesh, prepare, setSeason };
 }
 
-function buildWater(): THREE.Mesh {
+// The tarns: open water, or snow-dusted ice in winter (see setSeason).
+const OPEN_WATER = { color: C("#26404f"), roughness: 0.08, metalness: 0.3 };
+const ICE = { color: C("#dbe3ea"), roughness: 0.55, metalness: 0 };
+
+function buildWater(): THREE.Mesh<
+	THREE.CircleGeometry,
+	THREE.MeshStandardMaterial
+> {
 	const mesh = new THREE.Mesh(
 		new THREE.CircleGeometry(5000, 64),
 		new THREE.MeshStandardMaterial({
-			color: "#26404f",
-			roughness: 0.08,
-			metalness: 0.3,
+			...OPEN_WATER,
+			color: OPEN_WATER.color.clone(),
 		}),
 	);
 	mesh.rotation.x = -Math.PI / 2;
@@ -289,14 +354,18 @@ function scatter(
 }
 
 // Beyond about 10 m single blades are thinner than a pixel and only
-// shimmer, so the close ground cover stops there.
+// shimmer, so the close ground cover stops there. Its materials tint the
+// tufts' own colours, greener in summer (see buildLandscape).
+const GRASS = new THREE.MeshStandardMaterial({ roughness: 1 });
+const HEATHER = new THREE.MeshStandardMaterial({ roughness: 1 });
+
 function buildGroundCover(): THREE.Group {
 	const group = new THREE.Group();
 	group.add(
 		scatter(
 			tuftGeometry(),
 			// Open cones: their insides only face the ground.
-			new THREE.MeshStandardMaterial({ roughness: 1 }),
+			GRASS,
 			9000,
 			9,
 			["#8f9256", "#a39d66", "#7a8448", "#b0a874"],
@@ -304,7 +373,7 @@ function buildGroundCover(): THREE.Group {
 		),
 		scatter(
 			heatherGeometry(),
-			new THREE.MeshStandardMaterial({ roughness: 1 }),
+			HEATHER,
 			1600,
 			9,
 			["#6a5a50", "#5d5446", "#665a58", "#57503f"],
@@ -405,19 +474,42 @@ function buildStars(): THREE.Points {
 	);
 }
 
-export type Landscape = { group: THREE.Group; stars: THREE.Points };
+export type Landscape = {
+	group: THREE.Group;
+	stars: THREE.Points;
+	// Work out a season's ground colours ahead of time, without showing it.
+	prepare(season: Season): void;
+	setSeason(season: Season): void;
+};
 
 export function buildLandscape(): Landscape {
 	const group = new THREE.Group();
 	const stars = buildStars();
-	group.add(
-		buildGround(),
-		buildWater(),
-		buildBoulders(),
-		buildShrubs(),
-		buildGroundCover(),
-		buildCairn(),
-		stars,
-	);
-	return { group, stars };
+	const ground = buildGround();
+	const water = buildWater();
+	const boulders = buildBoulders();
+	const shrubs = buildShrubs();
+	const cover = buildGroundCover();
+	const cairn = buildCairn();
+	group.add(ground.mesh, water, boulders, shrubs, cover, cairn, stars);
+
+	function setSeason(season: Season) {
+		ground.setSeason(season);
+		const winter = season === "winter";
+		// Frozen tarns under a dusting of snow.
+		const look = winter ? ICE : OPEN_WATER;
+		water.material.color.copy(look.color);
+		water.material.roughness = look.roughness;
+		water.material.metalness = look.metalness;
+		// Everything on the ground is buried: boulders and the cairn,
+		// grass, heather and dwarf birch.
+		for (const buried of [boulders, cairn, shrubs, cover]) {
+			buried.visible = !winter;
+		}
+		// Greener grass and heather in summer.
+		GRASS.color.set(season === "summer" ? "#c4dd96" : "#ffffff");
+		HEATHER.color.set(season === "summer" ? "#b7c99a" : "#ffffff");
+	}
+
+	return { group, stars, prepare: (s) => void ground.prepare(s), setSeason };
 }

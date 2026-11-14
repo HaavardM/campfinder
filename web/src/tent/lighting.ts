@@ -17,8 +17,6 @@ type Preset = {
 	throughFabric: number;
 	fire: number;
 	lantern: number;
-	// How much the tent glows from the stove when seen from outside.
-	glow: number;
 	stars: boolean;
 	// Haze colour near the horizon, and how strongly the sky reflects in
 	// water and steel.
@@ -37,7 +35,6 @@ const PRESETS: Record<TimeOfDay, Preset> = {
 		throughFabric: 1.5,
 		fire: 1.5,
 		lantern: 0,
-		glow: 0,
 		stars: false,
 		fog: "#c3d0da",
 		reflections: 1,
@@ -52,7 +49,6 @@ const PRESETS: Record<TimeOfDay, Preset> = {
 		throughFabric: 0.6,
 		fire: 4,
 		lantern: 1.5,
-		glow: 0.03,
 		stars: false,
 		fog: "#c9a58e",
 		reflections: 1,
@@ -67,7 +63,6 @@ const PRESETS: Record<TimeOfDay, Preset> = {
 		throughFabric: 0,
 		fire: 6,
 		lantern: 2.5,
-		glow: 0.1,
 		stars: true,
 		fog: "#0d1420",
 		reflections: 0.15,
@@ -76,8 +71,7 @@ const PRESETS: Record<TimeOfDay, Preset> = {
 
 export type Lighting = {
 	set(time: TimeOfDay): void;
-	// Whether the stove is lit: in summer there is none, so no firelight
-	// glow on the tent at night.
+	// Whether the stove is lit: in summer there is none.
 	setStove(on: boolean): void;
 };
 
@@ -88,7 +82,6 @@ export function buildLighting(
 		// The stove flickers its own firelight; lighting sets how bright.
 		stove: { fireLevel: number };
 		lantern: THREE.PointLight;
-		fabric: THREE.MeshStandardMaterial;
 		stars: THREE.Points;
 	},
 ): Lighting {
@@ -169,7 +162,6 @@ export function buildLighting(
 			.multiplyScalar(sunUp ? p.ambient * 0.08 : 0);
 		parts.stove.fireLevel = p.fire;
 		parts.lantern.intensity = lanternLevel(p);
-		parts.fabric.emissiveIntensity = stoveOn ? p.glow : 0;
 		parts.stars.visible = p.stars;
 		renderer.toneMappingExposure = p.exposure;
 		fog.color.set(p.fog);
@@ -189,7 +181,6 @@ export function buildLighting(
 	function setStove(on: boolean) {
 		stoveOn = on;
 		if (!current) return;
-		parts.fabric.emissiveIntensity = on ? PRESETS[current].glow : 0;
 		parts.lantern.intensity = lanternLevel(PRESETS[current]);
 	}
 

@@ -12,6 +12,8 @@ export {
 	goBox,
 	hide,
 	lantern,
+	pulk,
+	skis,
 	table,
 	waterBowl,
 	woodBox,

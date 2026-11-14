@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { cm, FURNITURE } from "../specs";
+import { cm, FURNITURE, TENT } from "../specs";
 import { birchBark, fur, tiled, woodGrain } from "../textures";
 import {
 	aluminium,
@@ -735,6 +735,160 @@ export function dryingLine(a: THREE.Vector3, b: THREE.Vector3): THREE.Group {
 	return line;
 }
 
+// One touring ski, `length` long, standing on its tail: an outline with
+// sidecut (wider at tip and tail than underfoot), a thin body, and a tip
+// that curves up over its last 25 cm. The base faces -z, the top +z.
+function skiGeometry(length: number): THREE.BufferGeometry {
+	const halfWidth = (t: number) =>
+		// t from tail (0) to tip (1): 9 cm tail, 7 cm waist, 10 cm shovel.
+		t < 0.5
+			? 0.035 + 0.01 * ((0.5 - t) / 0.5) ** 2
+			: 0.035 +
+				0.015 * ((t - 0.5) / 0.4) ** 2 * (t > 0.9 ? 1 - (t - 0.9) * 6 : 1);
+	const outline: THREE.Vector2[] = [];
+	for (let i = 0; i <= 40; i++)
+		outline.push(new THREE.Vector2(halfWidth(i / 40), (i / 40) * length));
+	for (let i = 40; i >= 0; i--)
+		outline.push(new THREE.Vector2(-halfWidth(i / 40), (i / 40) * length));
+	const geometry = new THREE.ExtrudeGeometry(new THREE.Shape(outline), {
+		depth: 0.012,
+		bevelEnabled: true,
+		bevelThickness: 0.002,
+		bevelSize: 0.002,
+		bevelSegments: 1,
+		curveSegments: 1,
+	});
+	// Bend the shovel: points in the top 25 cm move forward, more towards
+	// the tip.
+	const pos = geometry.attributes.position;
+	const bendFrom = length - 0.25;
+	for (let i = 0; i < pos.count; i++) {
+		const y = pos.getY(i);
+		if (y > bendFrom)
+			pos.setZ(i, pos.getZ(i) + ((y - bendFrom) / 0.25) ** 2 * 0.06);
+	}
+	geometry.computeVertexNormals();
+	return geometry;
+}
+
+// Our two pairs of touring skis, 210 and 190 cm, and their poles, about
+// 135 cm, planted in the snow the way you leave them outside the tent: each
+// pair tail first and base to base, the poles beside them. Front (+x) is
+// out from the tent.
+export function skis() {
+	const set = item(
+		"Skis and poles",
+		"210 and 190 cm skis, 135 cm poles",
+		[0.4, 1.2],
+	);
+	const DEPTH = 0.2; // how far they're pushed into the snow
+	const dark = new THREE.MeshStandardMaterial({
+		color: "#1c1d1f",
+		roughness: 0.5,
+	});
+	const pole = new THREE.MeshStandardMaterial({
+		color: "#3a3d42",
+		metalness: 0.6,
+		roughness: 0.4,
+	});
+	const pairs: [z: number, length: number, colour: string][] = [
+		[-0.32, 2.1, "#2f6f8f"], // yours, blue
+		[0.32, 1.9, "#b0342b"], // your partner's, red
+	];
+	for (const [z, length, colour] of pairs) {
+		const geometry = skiGeometry(length);
+		// Top sheet in the ski's colour, the base and edges dark: the
+		// extrusion's caps are the faces, its sides the edges.
+		const top = new THREE.MeshStandardMaterial({
+			color: colour,
+			roughness: 0.35,
+		});
+		for (const side of [-1, 1]) {
+			const ski = solid(new THREE.Mesh(geometry, [top, dark]));
+			// Base to base: one faces out, the other is turned round.
+			ski.rotation.y = side < 0 ? 0 : Math.PI;
+			ski.position.set(0, -DEPTH, z + side * 0.008);
+			// A touring binding a little behind the middle: toe piece and
+			// heel unit, on the top sheet.
+			const mount = length * 0.42;
+			const toe = box(0.06, 0.05, 0.03, dark, 0.008);
+			toe.position.set(0, mount + 0.12, 0.028);
+			const heel = box(0.06, 0.08, 0.035, dark, 0.008);
+			heel.position.set(0, mount - 0.2, 0.03);
+			ski.add(toe, heel);
+			set.add(ski);
+		}
+		// The pair leans a touch back, as planted skis do.
+		for (const pole_ of [-1, 1]) {
+			const p = new THREE.Vector3(0.14, 0, z + pole_ * 0.12);
+			const stick = rod(
+				p.clone().setY(-0.15),
+				p.clone().setY(1.2),
+				0.009,
+				pole,
+			);
+			const basket = solid(
+				new THREE.Mesh(new THREE.TorusGeometry(0.045, 0.006, 6, 16), dark),
+			);
+			basket.rotation.x = Math.PI / 2;
+			basket.position.copy(p).setY(0.08);
+			const grip = cylinder(0.016, 0.12, dark);
+			grip.position.copy(p).setY(1.15);
+			set.add(stick, basket, grip);
+		}
+	}
+	return set;
+}
+
+// An expedition pulk: a moulded sled tub, about 155 × 52 cm and 25 cm high
+// with its load (typical size, estimate), the load under a tarp, and two
+// drawbars lying forward on the snow. Front (+x) is where the drawbars go.
+export function pulk(tarp: string) {
+	const L = 1.55;
+	const W = 0.52;
+	const sled = item("Pulk", "about 155 × 52 cm, 25 cm high, 110 cm drawbars", [
+		L + 1.1,
+		W,
+	]);
+	const shell = new THREE.MeshStandardMaterial({
+		color: "#d4552b",
+		roughness: 0.45,
+	});
+	const cover = fabric(tarp, 20, 20);
+	const black = new THREE.MeshStandardMaterial({
+		color: "#1c1d1f",
+		roughness: 0.6,
+	});
+
+	// The tub: low sides, the nose turned up.
+	const tub = box(L - 0.15, 0.14, W, shell, 0.05);
+	tub.position.set(-0.075, 0.07, 0);
+	const nose = box(0.22, 0.12, W - 0.02, shell, 0.05);
+	nose.position.set(L / 2 - 0.12, 0.1, 0);
+	nose.rotation.z = 0.45;
+	// The load under its tarp, and two straps over it.
+	const load = box(L - 0.35, 0.13, W - 0.04, cover, 0.06);
+	load.position.set(-0.13, 0.19, 0);
+	sled.add(tub, nose, load);
+	for (const x of [-0.45, 0.15]) {
+		const strap = box(0.03, 0.135, W - 0.02, black, 0.01);
+		strap.position.set(x, 0.195, 0);
+		sled.add(strap);
+	}
+	// Drawbars from the nose forward to the waist belt, lying on the snow.
+	for (const side of [-1, 1]) {
+		sled.add(
+			rod(
+				v3(L / 2 - 0.05, 0.12, side * 0.17),
+				v3(L / 2 + 1.05, 0.02, side * 0.12),
+				0.012,
+				black,
+			),
+		);
+	}
+	return sled;
+}
+
 // Hangs from the apex on a 25 cm cord. Its light is used at night.
 export function lantern(apex: number) {
 	const group = new THREE.Group();
@@ -763,7 +917,7 @@ export function lantern(apex: number) {
 	glass.position.y = apex - 0.32;
 	const base = cylinder(0.05, 0.025, metal);
 	base.position.y = apex - 0.38;
-	const light = new THREE.PointLight("#ffd29a", 0, 10, 1.6);
+	const light = new THREE.PointLight("#ffd29a", 0, TENT.lightReach, 1.6);
 	light.position.copy(glass.position);
 	group.add(cord, hook, cap, glass, base, light);
 	return { group, light };
