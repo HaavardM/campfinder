@@ -31,7 +31,7 @@ export function Joystick() {
 
 	return (
 		<div
-			className="fixed bottom-36 left-6 z-10 touch-none rounded-full border-2 border-white/60 bg-black/25 backdrop-blur-sm"
+			className="fixed bottom-36 left-[max(--spacing(6),env(safe-area-inset-left))] z-10 touch-none rounded-full border-2 border-white/60 bg-black/25 backdrop-blur-sm"
 			style={{ width: SIZE, height: SIZE }}
 			onPointerDown={(e) => {
 				e.currentTarget.setPointerCapture(e.pointerId);

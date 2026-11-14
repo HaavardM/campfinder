@@ -37,7 +37,7 @@ export function WalkHud() {
 	return (
 		<>
 			{touchOnly && !hud.seated && <Joystick />}
-			<div className="pointer-events-none fixed inset-x-0 bottom-4 z-10 flex flex-col items-center gap-2 px-3">
+			<div className="pointer-events-none fixed inset-x-0 bottom-[max(--spacing(4),env(safe-area-inset-bottom))] z-10 flex flex-col items-center gap-2 px-3">
 				<div
 					className={cn(
 						"rounded-full border px-4 py-2 text-sm shadow-lg tabular-nums",

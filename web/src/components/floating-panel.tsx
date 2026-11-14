@@ -21,7 +21,7 @@ export function FloatingPanel(props: {
 	return (
 		<Card
 			className={cn(
-				"absolute top-3 left-3 z-10 gap-0 py-0 shadow-lg",
+				"absolute top-[max(--spacing(3),env(safe-area-inset-top))] left-[max(--spacing(3),env(safe-area-inset-left))] z-10 gap-0 py-0 shadow-lg",
 				props.className,
 			)}
 		>
