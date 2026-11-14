@@ -8,7 +8,8 @@ import { Card, CardContent } from "#/components/ui/card";
 // The panel floating in the top-left corner of both pages. Tapping the
 // title folds it down to just the title, so the view behind it can be seen
 // on a small screen. `className` sets the width (and anything else) of the
-// card; `children` are what folds away. Pass `open` and `onOpenChange` to
+// card; `children` are what folds away. It keeps clear of an iPhone's
+// camera cutout and home bar, and scrolls rather than run off the screen. Pass `open` and `onOpenChange` to
 // fold it from outside as well.
 export function FloatingPanel(props: {
 	title: string;
@@ -21,7 +22,10 @@ export function FloatingPanel(props: {
 	return (
 		<Card
 			className={cn(
-				"absolute top-[max(--spacing(3),env(safe-area-inset-top))] left-[max(--spacing(3),env(safe-area-inset-left))] z-10 gap-0 py-0 shadow-lg",
+				"absolute z-10 gap-0 overflow-auto py-0 shadow-lg",
+				"top-[max(--spacing(3),env(safe-area-inset-top))] left-[max(--spacing(3),env(safe-area-inset-left))]",
+				"max-h-[calc(100dvh-max(--spacing(3),env(safe-area-inset-top))-max(--spacing(3),env(safe-area-inset-bottom)))]",
+				"max-w-[calc(100vw-max(--spacing(3),env(safe-area-inset-left))-max(--spacing(3),env(safe-area-inset-right)))]",
 				props.className,
 			)}
 		>

@@ -112,7 +112,7 @@ export function TentPanel() {
 			onOpenChange={setPanelOpen}
 			title="Gamme 8 PC"
 			icon={Tent}
-			className="max-h-[calc(100vh-1.5rem)] w-[min(22rem,calc(100vw-1.5rem))] overflow-auto"
+			className="w-[22rem]"
 		>
 			<div className="flex flex-col gap-3 pt-1 pb-1">
 				<p className="text-xs text-muted-foreground">
