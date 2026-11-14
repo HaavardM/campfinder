@@ -85,6 +85,10 @@ export function buildLighting(
 		stars: THREE.Points;
 	},
 ): Lighting {
+	// The sky shader draws on a big box. Kept out of the scene and painted
+	// into a cube texture for the background instead: high quality's
+	// ambient occlusion redraws the scene's geometry with a plain material,
+	// and saw the box's faces and shaded its corners.
 	const sky = new Sky();
 	sky.scale.setScalar(20000);
 	const u = sky.material.uniforms;
@@ -92,7 +96,14 @@ export function buildLighting(
 	u.rayleigh.value = 1.2;
 	u.mieCoefficient.value = 0.004;
 	u.mieDirectionalG.value = 0.8;
-	scene.add(sky);
+	const skyScene = new THREE.Scene().add(sky);
+	// Half floats against banding in the dark night sky.
+	const background = new THREE.WebGLCubeRenderTarget(512, {
+		type: THREE.HalfFloatType,
+		depthBuffer: false,
+	});
+	const skyCamera = new THREE.CubeCamera(1, 30000, background);
+	scene.background = background.texture;
 
 	const sun = new THREE.DirectionalLight();
 	sun.castShadow = true;
@@ -124,7 +135,6 @@ export function buildLighting(
 	// Reflections (water, steel) come from the sky, blurred into an
 	// environment map. Made once per time of day and kept.
 	const pmrem = new THREE.PMREMGenerator(renderer);
-	const skyScene = new THREE.Scene();
 	const environments = new Map<TimeOfDay, THREE.Texture>();
 	let current: TimeOfDay | null = null;
 	let stoveOn = true;
@@ -166,10 +176,11 @@ export function buildLighting(
 		renderer.toneMappingExposure = p.exposure;
 		fog.color.set(p.fog);
 
+		skyCamera.update(renderer, skyScene);
 		if (!environments.has(time)) {
-			skyScene.add(sky);
+			// From the sky itself rather than the background: 256² is plenty
+			// once blurred, and a quarter of the memory of 512².
 			environments.set(time, pmrem.fromScene(skyScene).texture);
-			scene.add(sky);
 		}
 		scene.environment = environments.get(time) as THREE.Texture;
 		scene.environmentIntensity = p.reflections;
