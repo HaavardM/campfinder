@@ -1,3 +1,4 @@
+import { cn } from "cn";
 import { useState } from "react";
 
 import { controls } from "#/tent/scene";
@@ -7,7 +8,8 @@ const REACH = SIZE / 2 - 20; // how far the knob can move from the centre
 
 // An on-screen joystick for walking on a touch screen: push the knob the
 // way you want to go, further to go faster.
-export function Joystick() {
+// `raised` moves it up out of the way of the measurements at the bottom.
+export function Joystick(props: { raised: boolean }) {
 	const [knob, setKnob] = useState({ x: 0, y: 0 });
 
 	function move(e: React.PointerEvent<HTMLDivElement>) {
@@ -31,7 +33,10 @@ export function Joystick() {
 
 	return (
 		<div
-			className="fixed bottom-36 left-[max(--spacing(6),env(safe-area-inset-left))] z-10 touch-none rounded-full border-2 border-white/60 bg-black/25 backdrop-blur-sm"
+			className={cn(
+				"fixed left-[max(--spacing(6),env(safe-area-inset-left))] z-10 touch-none rounded-full border-2 border-white/60 bg-black/25 backdrop-blur-sm",
+				props.raised ? "bottom-36" : "bottom-16",
+			)}
 			style={{ width: SIZE, height: SIZE }}
 			onPointerDown={(e) => {
 				e.currentTarget.setPointerCapture(e.pointerId);

@@ -43,7 +43,7 @@ export function heightAt(x: number, z: number): number {
 }
 
 // Distance from the axis to the fabric at height y in direction φ.
-export function wallRadius(phi: number, y: number): number {
+function wallRadius(phi: number, y: number): number {
 	if (y >= R) return 0;
 	return R * bow(phi) * Math.sqrt(1 - (y / R) ** 2);
 }
@@ -652,9 +652,8 @@ export function buildTent(): Tent {
 	return { group, fabric, setDoors };
 }
 
-// The headroom lines drawn on the floor, and their colours (also used by
-// the legend in the panel): where each of you can stand upright, then 150
-// and 100 cm.
+// The headroom lines drawn on the floor, and their colours: where each of
+// you can stand upright, then 150 and 100 cm.
 export const HEADROOM: [height: number, colour: string][] = [
 	[PEOPLE.you, "#e2513b"],
 	[PEOPLE.partner, "#d68a1c"],

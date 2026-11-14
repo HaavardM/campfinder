@@ -38,7 +38,6 @@ import {
 	heightAt,
 	onWall,
 	throughFabric,
-	wallRadius,
 } from "./tent";
 import { touchOnly } from "./touch";
 import { buildWalk } from "./walk";
@@ -299,10 +298,6 @@ jackRing.position.copy(jack.point);
 jackRing.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), jack.out);
 scene.add(jackRing);
 
-function pipePosition(): THREE.Vector3 {
-	return theStove.localToWorld(new THREE.Vector3(PIPE_X, 0, 0));
-}
-
 // ---------------------------------------------------------------- lights
 
 const lighting = buildLighting(renderer, scene, {
@@ -484,75 +479,8 @@ function owner(object: THREE.Object3D): Item {
 	return o as Item;
 }
 
-// ---------------------------------------------------------------- measuring
-
-// Corners of a `length` × `width` rectangle centred on an item's origin,
-// on the floor in world coordinates. Defaults to the item's footprint.
-function corners(it: Item, [l, w] = it.userData.footprint): THREE.Vector2[] {
-	return [
-		[-l / 2, -w / 2],
-		[l / 2, -w / 2],
-		[l / 2, w / 2],
-		[-l / 2, w / 2],
-	].map(([x, z]) => {
-		const p = it.localToWorld(new THREE.Vector3(x, 0, z));
-		return new THREE.Vector2(p.x, p.z);
-	});
-}
-
-function pointToSegment(p: THREE.Vector2, a: THREE.Vector2, b: THREE.Vector2) {
-	const ab = b.clone().sub(a);
-	const t = THREE.MathUtils.clamp(
-		p.clone().sub(a).dot(ab) / ab.lengthSq(),
-		0,
-		1,
-	);
-	return p.distanceTo(a.clone().addScaledVector(ab, t));
-}
-
-function inside(p: THREE.Vector2, poly: THREE.Vector2[]): boolean {
-	return poly.every((a, i) => {
-		const b = poly[(i + 1) % poly.length];
-		return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) >= 0;
-	});
-}
-
-// Gap between two footprints, 0 if they overlap.
-function gap(a: Item, b: Item): number {
-	const pa = corners(a);
-	const pb = corners(b);
-	if (pa.some((p) => inside(p, pb)) || pb.some((p) => inside(p, pa))) return 0;
-	let best = Number.POSITIVE_INFINITY;
-	for (const [from, to] of [
-		[pa, pb],
-		[pb, pa],
-	]) {
-		for (const p of from) {
-			to.forEach((q, i) => {
-				best = Math.min(best, pointToSegment(p, q, to[(i + 1) % to.length]));
-			});
-		}
-	}
-	return best;
-}
-
-// How far the hot stove body is from the fabric, measured level with its
-// top plate where the wall is closest.
-function stoveToFabric(): number {
-	const top = STOVE.legHeight + STOVE.bodyHeight;
-	const body = corners(theStove, [STOVE.bodyLength, STOVE.bodyWidth]);
-	return Math.min(
-		...body.map((p) => wallRadius(Math.atan2(p.y, p.x), top) - p.length()),
-	);
-}
-
-// What the panel shows: the selected item and the stove's clearances, all
-// rounded to the centimetre.
-export type Info = {
-	selected: { name: string; size: string; fabricAbove: string } | null;
-	// Only with the stove up, in fall and winter.
-	stove: { toFabric: number; toCot: number; pipeOffJack: number } | null;
-};
+// What the panel shows: the selected item, if any.
+export type Info = { name: string; size: string; fabricAbove: string } | null;
 
 // What the walk view shows: how much room there is above your head.
 export type Hud = {
@@ -578,28 +506,16 @@ const centimetre = (m: number) => Math.round(m * 100) / 100;
 // pointer move of a drag.
 let lastInfo = "";
 function showInfo() {
-	const pipe = pipePosition();
 	const p = selected?.position;
 	const above = p ? heightAt(p.x, p.z) : 0;
-	const info: Info = {
-		selected:
-			selected && p
-				? {
-						name: selected.userData.name,
-						size: selected.userData.size,
-						fabricAbove: above > 0 ? cm(above) : "outside the tent",
-					}
-				: null,
-		stove: stoveUp(season)
+	const info: Info =
+		selected && p
 			? {
-					toFabric: centimetre(stoveToFabric()),
-					toCot: centimetre(Math.min(...cots.map((c) => gap(theStove, c)))),
-					pipeOffJack: centimetre(
-						Math.hypot(pipe.x - jack.point.x, pipe.z - jack.point.z),
-					),
+					name: selected.userData.name,
+					size: selected.userData.size,
+					fabricAbove: above > 0 ? cm(above) : "outside the tent",
 				}
-			: null,
-	};
+			: null;
 	const key = JSON.stringify(info);
 	if (key === lastInfo) return;
 	lastInfo = key;
@@ -647,7 +563,7 @@ function setSeeThrough(on: boolean) {
 // perspective views; the floor plan is drawn directly. Built during the
 // warm-up after start-up (see warmUp), so switching it on is instant.
 let composer: EffectComposer | null = null;
-let highQuality = false;
+let highQuality = true;
 
 function buildComposer(): EffectComposer {
 	const c = new EffectComposer(

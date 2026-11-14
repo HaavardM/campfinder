@@ -1,6 +1,7 @@
 import {
 	Armchair,
 	Bed,
+	ChevronDown,
 	Flower,
 	Footprints,
 	LayoutGrid,
@@ -17,6 +18,7 @@ import {
 	Sunset,
 	Tent,
 } from "lucide-react";
+import { Collapsible } from "radix-ui";
 import { useEffect, useState } from "react";
 
 import { FloatingPanel } from "#/components/floating-panel";
@@ -55,18 +57,20 @@ const TIMES: [TimeOfDay, string, typeof Sun][] = [
 type Who = keyof typeof PEOPLE;
 
 // The floating panel in the top-left corner, as on the map.
-export function TentPanel() {
+export function TentPanel(props: {
+	measure: boolean;
+	onMeasureChange: (on: boolean) => void;
+}) {
 	const [view, setView] = useState<View>("sit");
 	const [time, setTime] = useState<TimeOfDay>("day");
 	const [season, setSeason] = useState<Season>("fall");
 	const [who, setWho] = useState<Who>("you");
-	const [frontDoor, setFrontDoor] = useState(true);
-	const [backDoor, setBackDoor] = useState(false);
+	const [doors, setDoors] = useState(["front"]);
 	const [seeThrough, setSeeThrough] = useState(false);
 	const [headroom, setHeadroom] = useState(true);
 	const [dryingLine, setDryingLine] = useState(false);
 	const [legKit, setLegKit] = useState(false);
-	const [highQuality, setHighQuality] = useState(false);
+	const [highQuality, setHighQuality] = useState(true);
 	const fullscreen = useFullscreen();
 	// Folded down while you look around with the mouse; open again when Esc
 	// frees the mouse to use it.
@@ -81,7 +85,7 @@ export function TentPanel() {
 	}, []);
 	// Walking, sitting and lying are all seen through your own eyes.
 	const firstPerson = view === "walk" || view === "sit" || view === "lie";
-	const [info, setInfo] = useState<Info | null>(null);
+	const [info, setInfo] = useState<Info>(null);
 
 	useEffect(() => {
 		listeners.info = setInfo;
@@ -93,8 +97,8 @@ export function TentPanel() {
 	useDarkAtNight(time);
 	useEffect(() => controls.setWalkAs(who), [who]);
 	useEffect(
-		() => controls.setDoors(frontDoor, backDoor),
-		[frontDoor, backDoor],
+		() => controls.setDoors(doors.includes("front"), doors.includes("back")),
+		[doors],
 	);
 	// The floor plan always looks through the fabric.
 	useEffect(
@@ -114,12 +118,7 @@ export function TentPanel() {
 			icon={Tent}
 			className="w-[22rem]"
 		>
-			<div className="flex flex-col gap-3 pt-1 pb-1">
-				<p className="text-xs text-muted-foreground">
-					Nortent Gamme 8 PC · Ø 432 cm · 216 cm high · 14.5 m². Everything at
-					true size.
-				</p>
-
+			<div className="flex flex-col gap-3 pt-3 pb-1">
 				<ToggleGroup
 					type="single"
 					variant="outline"
@@ -196,53 +195,71 @@ export function TentPanel() {
 					))}
 				</ToggleGroup>
 
-				<div className="flex flex-col gap-2.5 rounded-md border p-3">
-					<Setting
-						id="front-door"
-						label="Front door open"
-						checked={frontDoor}
-						onChange={setFrontDoor}
-					/>
-					<Setting
-						id="back-door"
-						label="Back door open"
-						checked={backDoor}
-						onChange={setBackDoor}
-					/>
-					<Setting
-						id="see-through"
-						label="See-through tent"
-						checked={seeThrough}
-						onChange={setSeeThrough}
-					/>
-					<Setting
-						id="leg-kit"
-						label={`Cots on leg extensions (${cm(COT.heightWithLegs)})`}
-						checked={legKit}
-						onChange={setLegKit}
-					/>
-					<Setting
-						id="drying-line"
-						label="Drying line with clothes"
-						checked={dryingLine}
-						onChange={setDryingLine}
-					/>
-					<Setting
-						id="headroom"
-						label="Headroom lines on the floor"
-						checked={headroom}
-						onChange={setHeadroom}
-					/>
-					{headroom && <HeadroomLegend />}
-					<Setting
-						id="high-quality"
-						label="High quality rendering"
-						checked={highQuality}
-						onChange={setHighQuality}
-					/>
+				<div className="flex items-center justify-between gap-2 text-sm">
+					<span className="text-muted-foreground">Doors open</span>
+					<ToggleGroup
+						type="multiple"
+						variant="outline"
+						size="sm"
+						value={doors}
+						onValueChange={setDoors}
+					>
+						<ToggleGroupItem value="front">Front</ToggleGroupItem>
+						<ToggleGroupItem value="back">Back</ToggleGroupItem>
+					</ToggleGroup>
 				</div>
 
-				{info && <Measurements info={info} />}
+				{/* The switches you rarely change, folded away. */}
+				<Collapsible.Root className="rounded-md border">
+					<Collapsible.Trigger className="group flex w-full items-center justify-between p-3 text-sm">
+						More
+						<ChevronDown className="size-4 transition-transform duration-200 group-data-[state=open]:rotate-180" />
+					</Collapsible.Trigger>
+					<Collapsible.Content className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+						<div className="flex flex-col gap-2.5 px-3 pb-3">
+							<Setting
+								id="see-through"
+								label="See-through tent"
+								checked={seeThrough}
+								onChange={setSeeThrough}
+							/>
+							<Setting
+								id="leg-kit"
+								label={`Cots on leg extensions (${cm(COT.heightWithLegs)})`}
+								checked={legKit}
+								onChange={setLegKit}
+							/>
+							<Setting
+								id="drying-line"
+								label="Drying line with clothes"
+								checked={dryingLine}
+								onChange={setDryingLine}
+							/>
+							<Setting
+								id="headroom"
+								label="Headroom lines on the floor"
+								title={`Dashed lines where the roof is ${HEADROOM.map(([h]) => cm(h)).join(", ")} high: red where you stand upright, orange where your partner does`}
+								checked={headroom}
+								onChange={setHeadroom}
+							/>
+							<Setting
+								id="measure"
+								label="Room above your head"
+								title="While walking, sitting or lying: how much room there is above your head, or above your face lying down"
+								checked={props.measure}
+								onChange={props.onMeasureChange}
+							/>
+							<Setting
+								id="high-quality"
+								label="High quality rendering"
+								checked={highQuality}
+								onChange={setHighQuality}
+							/>
+						</div>
+					</Collapsible.Content>
+				</Collapsible.Root>
+
+				{info && <Selected item={info} />}
 
 				<div className="flex items-center gap-2">
 					<p className="flex-1 text-xs text-muted-foreground">
@@ -282,12 +299,13 @@ export function TentPanel() {
 function Setting(props: {
 	id: string;
 	label: string;
+	title?: string;
 	checked: boolean;
 	onChange: (on: boolean) => void;
 }) {
 	return (
 		<div className="flex items-center justify-between gap-2 text-sm">
-			<label htmlFor={props.id} className="cursor-pointer">
+			<label htmlFor={props.id} title={props.title} className="cursor-pointer">
 				{props.label}
 			</label>
 			<Switch
@@ -299,108 +317,38 @@ function Setting(props: {
 	);
 }
 
-// The dashed lines drawn on the floor (tent.ts).
-function HeadroomLegend() {
-	const [[mine, red], [theirs, orange], ...rest] = HEADROOM;
-	const lines = [
-		[red, `${cm(mine)}: you stand upright`],
-		[orange, `${cm(theirs)}: your partner stands upright`],
-		[rest[0][1], rest.map(([h]) => cm(h)).join(" and ")],
-	];
-	return (
-		<div className="flex flex-col gap-1 text-xs text-muted-foreground">
-			{lines.map(([colour, label]) => (
-				<span key={label} className="flex items-center gap-1.5">
-					<span
-						className="w-4 border-t-2 border-dashed"
-						style={{ borderColor: colour }}
-					/>
-					{label}
-				</span>
-			))}
-		</div>
-	);
-}
-
-function Measurements({ info }: { info: Info }) {
-	const stove = info.stove;
-	if (!info.selected && !stove) return null;
+// The gear you picked: its name and size, how much roof there is above
+// it, and buttons to turn it.
+function Selected({ item }: { item: NonNullable<Info> }) {
 	return (
 		<div className="flex flex-col gap-1.5 rounded-md border p-3 text-sm">
-			{info.selected ? (
-				<>
-					<div className="flex items-center gap-2">
-						<span className="flex-1 font-medium">{info.selected.name}</span>
-						{/* Q and E on a keyboard. */}
-						<Button
-							variant="outline"
-							size="icon-sm"
-							onClick={() => controls.turnSelected(1)}
-							title="Turn left (Q)"
-							aria-label="Turn left"
-						>
-							<RotateCcw />
-						</Button>
-						<Button
-							variant="outline"
-							size="icon-sm"
-							onClick={() => controls.turnSelected(-1)}
-							title="Turn right (E)"
-							aria-label="Turn right"
-						>
-							<RotateCw />
-						</Button>
-					</div>
-					<span className="text-xs text-muted-foreground">
-						{info.selected.size}
-					</span>
-					<Row
-						label="Fabric above its centre"
-						value={info.selected.fabricAbove}
-					/>
-				</>
-			) : null}
-			{info.selected && stove ? <div className="my-1 border-t" /> : null}
-			{stove ? (
-				<>
-					<Row
-						label="Stove to fabric"
-						value={cm(stove.toFabric)}
-						warn={stove.toFabric < 0.3}
-					/>
-					<Row
-						label="Stove to nearest cot"
-						value={cm(stove.toCot)}
-						warn={stove.toCot < 0.3}
-					/>
-					<Row
-						label="Pipe to stove jack"
-						value={
-							stove.pipeOffJack < 0.01
-								? "lined up"
-								: `${cm(stove.pipeOffJack)} off`
-						}
-						warn={stove.pipeOffJack >= 0.01}
-					/>
-				</>
-			) : null}
-		</div>
-	);
-}
-
-function Row(props: { label: string; value: string; warn?: boolean }) {
-	return (
-		<div className="flex justify-between gap-2">
-			<span className="text-muted-foreground">{props.label}</span>
-			<span
-				className={
-					props.warn
-						? "font-medium text-destructive tabular-nums"
-						: "font-medium tabular-nums"
-				}
-			>
-				{props.value}
-			</span>
+			<div className="flex items-center gap-2">
+				<span className="flex-1 font-medium">{item.name}</span>
+				{/* Q and E on a keyboard. */}
+				<Button
+					variant="outline"
+					size="icon-sm"
+					onClick={() => controls.turnSelected(1)}
+					title="Turn left (Q)"
+					aria-label="Turn left"
+				>
+					<RotateCcw />
+				</Button>
+				<Button
+					variant="outline"
+					size="icon-sm"
+					onClick={() => controls.turnSelected(-1)}
+					title="Turn right (E)"
+					aria-label="Turn right"
+				>
+					<RotateCw />
+				</Button>
+			</div>
+			<span className="text-xs text-muted-foreground">{item.size}</span>
+			<div className="flex justify-between gap-2">
+				<span className="text-muted-foreground">Fabric above its centre</span>
+				<span className="font-medium tabular-nums">{item.fabricAbove}</span>
+			</div>
 		</div>
 	);
 }
