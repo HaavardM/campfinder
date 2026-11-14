@@ -787,7 +787,10 @@ function resize() {
 	composer?.setPixelRatio(1);
 	composer?.setSize(w, h);
 }
-window.addEventListener("resize", resize);
+// Watch the canvas rather than the window: turning an iPhone fires the
+// window's resize before the canvas has its new size, leaving the view
+// squashed to the old shape.
+new ResizeObserver(resize).observe(canvas);
 
 // Inside with both doors shut and the fabric opaque, nothing outside can be
 // seen: skip drawing the landscape altogether.
