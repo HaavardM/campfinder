@@ -175,9 +175,6 @@ function buildFabric(): THREE.Mesh {
 		roughness: 0.95,
 		bumpMap: weave(),
 		bumpScale: 0.6,
-		// Lights up from inside at night; see lighting.ts.
-		emissive: new THREE.Color("#ff9a4a"),
-		emissiveIntensity: 0,
 	});
 	cutOpenDoors(material, true);
 	const mesh = new THREE.Mesh(geometry, material);
@@ -206,6 +203,14 @@ export const throughFabric = {
 	sunDirection: { value: new THREE.Vector3(0, 1, 0) },
 	sunThrough: { value: new THREE.Color(0, 0, 0) },
 	skyThrough: { value: new THREE.Color(0, 0, 0) },
+	// And the other way: the lights inside, the stove's fire and the lantern,
+	// shining out through the cloth. Where they are, and how bright (colour
+	// times intensity, 0 when off); set every frame by scene.ts, so the glow
+	// flickers with the fire.
+	firePosition: { value: new THREE.Vector3() },
+	fireLight: { value: new THREE.Color(0, 0, 0) },
+	lanternPosition: { value: new THREE.Vector3() },
+	lanternLight: { value: new THREE.Color(0, 0, 0) },
 };
 
 const f = (v: number) => v.toFixed(5); // a number for GLSL
@@ -214,9 +219,10 @@ const f = (v: number) => v.toFixed(5); // a number for GLSL
 // shader skips every pixel that lies inside an open door's arch. Same test
 // as inDoor, but on the exact pixel position so the edge is crisp.
 //
-// With `daylight`, the inside of the fabric also glows with the light
-// coming through the polycotton: bright where the sun is on the outside,
-// dimmer on the shaded side, a little skylight everywhere.
+// With `daylight`, the fabric also glows with light coming through the
+// polycotton: on the inside, bright where the sun is on the outside, dimmer
+// on the shaded side, a little skylight everywhere; on the outside, with
+// the fire and the lantern inside.
 function cutOpenDoors(material: THREE.Material, daylight = false) {
 	material.onBeforeCompile = (shader) => {
 		shader.uniforms.doorsOpen = doorsOpen;
@@ -243,7 +249,17 @@ function cutOpenDoors(material: THREE.Material, daylight = false) {
 				}
 				uniform vec3 sunDirection;
 				uniform vec3 sunThrough;
-				uniform vec3 skyThrough;`,
+				uniform vec3 skyThrough;
+				uniform vec3 firePosition;
+				uniform vec3 fireLight;
+				uniform vec3 lanternPosition;
+				uniform vec3 lanternLight;
+				// Light from a lamp inside reaching this point of the cloth:
+				// fading with distance, gently so the whole wall glows.
+				vec3 fromInside(vec3 lampPosition, vec3 lamp) {
+					float d = length(vTent - lampPosition);
+					return lamp / (1.0 + d * d / 0.5);
+				}`,
 			)
 			.replace(
 				"#include <emissivemap_fragment>",
@@ -277,6 +293,13 @@ function cutOpenDoors(material: THREE.Material, daylight = false) {
 					// night, they don't show.
 					totalEmissiveRadiance += diffuseColor.rgb * (1.0 - 0.5 * seam)
 						* (sunThrough * sunOnOutside + skyThrough * skyOnOutside);
+				} else {
+					// The outside, glowing with the fire and the lantern inside.
+					// Polycotton lets through about a fifth; seams and sleeves
+					// less.
+					totalEmissiveRadiance += diffuseColor.rgb * 0.2 * (1.0 - 0.5 * seam)
+						* (fromInside(firePosition, fireLight)
+							+ fromInside(lanternPosition, lanternLight));
 				}`
 					: "#include <emissivemap_fragment>",
 			)

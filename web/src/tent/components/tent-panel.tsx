@@ -1,6 +1,7 @@
 import {
 	Armchair,
 	Bed,
+	Flower,
 	Footprints,
 	LayoutGrid,
 	Leaf,
@@ -21,7 +22,7 @@ import { FloatingPanel } from "#/components/floating-panel";
 import { Button } from "#/components/ui/button";
 import { Switch } from "#/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
-import { SEASONS, type Season } from "#/lib/seasons";
+import type { Season } from "#/tent/landscape";
 import type { TimeOfDay } from "#/tent/lighting";
 import { controls, type Info, listeners, type View } from "#/tent/scene";
 import { COT, cm, PEOPLE } from "#/tent/specs";
@@ -35,10 +36,12 @@ const VIEWS: [View, string, typeof Mountain][] = [
 	["plan", "Plan", LayoutGrid],
 ];
 
-// Winter first: the stove is what this tent is for.
-const SEASON_ICONS: [Season, typeof Sun][] = [
-	["winter", Snowflake],
-	["summer", Leaf],
+// Summer: the table. Fall and winter: the stove, with the plateau under
+// snow in winter.
+const SEASON_BUTTONS: [Season, string, typeof Sun][] = [
+	["summer", "Summer", Flower],
+	["fall", "Fall", Leaf],
+	["winter", "Winter", Snowflake],
 ];
 
 const TIMES: [TimeOfDay, string, typeof Sun][] = [
@@ -53,7 +56,7 @@ type Who = keyof typeof PEOPLE;
 export function TentPanel() {
 	const [view, setView] = useState<View>("sit");
 	const [time, setTime] = useState<TimeOfDay>("day");
-	const [season, setSeason] = useState<Season>("winter");
+	const [season, setSeason] = useState<Season>("fall");
 	const [who, setWho] = useState<Who>("you");
 	const [frontDoor, setFrontDoor] = useState(true);
 	const [backDoor, setBackDoor] = useState(false);
@@ -164,10 +167,10 @@ export function TentPanel() {
 					value={season}
 					onValueChange={(v) => v && setSeason(v as Season)}
 				>
-					{SEASON_ICONS.map(([value, Icon]) => (
+					{SEASON_BUTTONS.map(([value, label, Icon]) => (
 						<ToggleGroupItem key={value} value={value} className="flex-1">
 							<Icon />
-							{SEASONS[value]}
+							{label}
 						</ToggleGroupItem>
 					))}
 				</ToggleGroup>

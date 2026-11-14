@@ -4,7 +4,6 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
-import type { Season } from "#/lib/seasons";
 import {
 	campKitchen,
 	car,
@@ -22,12 +21,14 @@ import {
 	lantern,
 	PIPE_X,
 	person,
+	pulk,
+	skis,
 	stove,
 	table,
 	waterBowl,
 	woodBox,
 } from "./gear";
-import { buildLandscape } from "./landscape";
+import { buildLandscape, SEASONS, type Season } from "./landscape";
 import { buildLighting, type TimeOfDay } from "./lighting";
 import { COT, cm, FURNITURE, PEOPLE, STOVE, TENT } from "./specs";
 import {
@@ -36,6 +37,7 @@ import {
 	FABRIC_LAYER,
 	heightAt,
 	onWall,
+	throughFabric,
 	wallRadius,
 } from "./tent";
 import { buildWalk } from "./walk";
@@ -113,6 +115,8 @@ yourChair.add(you);
 partnersChair.add(partner);
 
 const theCar = car();
+const theSkis = skis();
+const pulks = [pulk("#2f4d3c"), pulk("#3d4652")];
 const theWoodBox = woodBox();
 const bigTable = table(
 	"Camp table (Helinox Table Two size)",
@@ -163,13 +167,24 @@ const LAYOUT: [Item, x: number, z: number, turn: number][] = [
 	[theHusky, -1.5, -0.33, 0], // by the closed back door; turned to face your partner below
 	[waterBowl(), -1.7, -0.85, 0], // his water, on the far side of him from the fridge
 	[theCar, 4.2, -3.6, -35], // parked outside
+	[theSkis, 3.0, 0.9, 0], // in winter, planted in the snow by the front door
+	[pulks[0], 0.4, -4.0, 5], // in winter, off to the side, past the guy lines
+	[pulks[1], 0.2, -4.75, 12],
 ];
 const items = LAYOUT.map(([it]) => it);
 
-// Winter: the stove and its firewood. Summer: no stove, a big table in its
-// place.
-const WINTER_ONLY: Item[] = [theStove, theWoodBox, smallTable];
-const SUMMER_ONLY: Item[] = [bigTable];
+// The gear that comes and goes with the season, and the seasons it's there
+// in. Fall and winter: the stove and its firewood. Summer: no stove, a big
+// table in its place. In winter we come on skis and pulks, not by car.
+const SEASONAL: [Item, Season[]][] = [
+	[theStove, ["fall", "winter"]],
+	[theWoodBox, ["fall", "winter"]],
+	[smallTable, ["fall", "winter"]],
+	[bigTable, ["summer"]],
+	[theCar, ["summer", "fall"]],
+	[theSkis, ["winter"]],
+	...pulks.map((p): [Item, Season[]] => [p, ["winter"]]),
+];
 
 // In summer there's no fire to watch: you sit across the table from each
 // other, you on the front door side, your partner on the back door side.
@@ -178,16 +193,17 @@ const SUMMER_CHAIRS: [Item, x: number, z: number, turn: number][] = [
 	[partnersChair, -0.83, 0, 0],
 ];
 const CHAIRS: Item[] = [yourChair, partnersChair];
-let season: Season = "winter";
+let season: Season = "fall";
+const stoveUp = (s: Season) => s !== "summer";
 
 function showFor(s: Season) {
-	for (const it of WINTER_ONLY) it.visible = s === "winter";
-	for (const it of SUMMER_ONLY) it.visible = s === "summer";
+	for (const [it, seasons] of SEASONAL) it.visible = seasons.includes(s);
 }
 
 function setSeason(next: Season) {
 	season = next;
 	showFor(next);
+	landscape.setSeason(next);
 	if (selected && !selected.visible) select(null);
 	for (const spot of next === "summer"
 		? SUMMER_CHAIRS
@@ -196,7 +212,7 @@ function setSeason(next: Season) {
 	}
 	if (selected) outline.setFromObject(selected);
 	hangLantern();
-	lighting.setStove(next === "winter");
+	lighting.setStove(stoveUp(next));
 	// Seated, follow your chair to its new spot.
 	if (view === "sit") setView("sit");
 	redrawShadows();
@@ -235,7 +251,7 @@ let line: THREE.Group;
 // An optional line to dry clothes on (off at start; a switch in the panel),
 // across the tent between the walls at 1.9 m,
 // in the warm air from the stove but well clear of its pipe, and clear of
-// the lantern in both seasons.
+// the lantern wherever it hangs.
 {
 	const x = 0.25;
 	const y = 1.9;
@@ -255,7 +271,7 @@ let line: THREE.Group;
 	scene.add(line);
 }
 
-// The lantern hangs from the roof: at the top in winter, and in summer
+// The lantern hangs from the roof: at the top with the stove up, and in summer
 // right above the big table, to light it for cooking and eating. It is
 // built hanging from the apex, so lower it by how much lower the roof is
 // where it hangs.
@@ -287,7 +303,6 @@ function pipePosition(): THREE.Vector3 {
 const lighting = buildLighting(renderer, scene, {
 	stove: theStove,
 	lantern: hanging.light,
-	fabric: tent.fabric.material,
 	stars: landscape.stars,
 });
 
@@ -322,8 +337,8 @@ function setView(next: View) {
 	// Walking: in the middle, in front of the drying line, looking at the
 	// stove by the back door.
 	// Sitting: in your chair, over the middle of its seat, looking at the
-	// stove in winter and across the table at the other one of you in
-	// summer.
+	// stove in fall and winter and across the table at the other one of you
+	// in summer.
 	const stoveFront = theStove.localToWorld(new THREE.Vector3(0.3, 0.4, 0));
 	const other = walkingAs === "you" ? partnersChair : yourChair;
 	const across = other.position.clone().setY(1.0);
@@ -518,7 +533,7 @@ function stoveToFabric(): number {
 // rounded to the centimetre.
 export type Info = {
 	selected: { name: string; size: string; fabricAbove: string } | null;
-	// Only in winter, with the stove up.
+	// Only with the stove up, in fall and winter.
 	stove: { toFabric: number; toCot: number; pipeOffJack: number } | null;
 };
 
@@ -558,16 +573,15 @@ function showInfo() {
 						fabricAbove: above > 0 ? cm(above) : "outside the tent",
 					}
 				: null,
-		stove:
-			season === "winter"
-				? {
-						toFabric: centimetre(stoveToFabric()),
-						toCot: centimetre(Math.min(...cots.map((c) => gap(theStove, c)))),
-						pipeOffJack: centimetre(
-							Math.hypot(pipe.x - jack.point.x, pipe.z - jack.point.z),
-						),
-					}
-				: null,
+		stove: stoveUp(season)
+			? {
+					toFabric: centimetre(stoveToFabric()),
+					toCot: centimetre(Math.min(...cots.map((c) => gap(theStove, c)))),
+					pipeOffJack: centimetre(
+						Math.hypot(pipe.x - jack.point.x, pipe.z - jack.point.z),
+					),
+				}
+			: null,
 	};
 	const key = JSON.stringify(info);
 	if (key === lastInfo) return;
@@ -747,7 +761,7 @@ function resize() {
 window.addEventListener("resize", resize);
 
 // Inside with both doors shut and the fabric opaque, nothing outside can be
-// seen: skip drawing the landscape and the car altogether.
+// seen: skip drawing the landscape altogether.
 let seeThrough = false;
 let doorsShut = false;
 let sealedIn = false;
@@ -758,15 +772,32 @@ function hideOutsideWhenSealedIn() {
 	if (sealed === sealedIn) return;
 	sealedIn = sealed;
 	landscape.group.visible = !sealed;
-	theCar.visible = !sealed;
 	// Keep the shadow map whole for when you step back out.
 	if (!sealed) redrawShadows();
+}
+
+// Tell the fabric where the lights inside are and how bright they are now,
+// so it glows with them from outside (see throughFabric in tent.ts).
+function shineThroughFabric() {
+	const fire = theStove.visible
+		? theStove.fires.reduce((sum, light) => sum + light.intensity, 0)
+		: 0;
+	throughFabric.firePosition.value.copy(theStove.fireCentre);
+	theStove.localToWorld(throughFabric.firePosition.value);
+	throughFabric.fireLight.value
+		.copy(theStove.fires[0].color)
+		.multiplyScalar(fire);
+	hanging.light.getWorldPosition(throughFabric.lanternPosition.value);
+	throughFabric.lanternLight.value
+		.copy(hanging.light.color)
+		.multiplyScalar(hanging.light.intensity);
 }
 
 const clock = new THREE.Clock();
 function frame() {
 	const dt = Math.min(clock.getDelta(), 0.1);
 	theStove.burn(clock.elapsedTime);
+	shineThroughFabric();
 	if (view === "outside") orbit.update();
 	if (view === "plan") planControls.update();
 	walk.update(dt);
@@ -783,9 +814,11 @@ function frame() {
 // different lights (no stove), high quality adds the firelight's shadow and
 // the ambient occlusion passes, rendered once off screen.
 function warmUp() {
-	showFor(season === "winter" ? "summer" : "winter");
+	showFor(stoveUp(season) ? "summer" : "fall");
 	renderer.compile(scene, camera);
 	showFor(season);
+	// Work out every season's ground colours now, not on the first switch.
+	for (const s of SEASONS) landscape.prepare(s);
 	const fire = theStove.fires[0];
 	fire.castShadow = true;
 	renderer.compile(scene, camera);
@@ -804,7 +837,7 @@ function warmUp() {
 
 resize();
 lighting.set("day");
-setSeason("winter");
+setSeason("fall");
 // Start in your chair by the stove.
 setView("sit");
 frame();

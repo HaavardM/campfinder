@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { FURNITURE, STOVE } from "../specs";
+import { FURNITURE, STOVE, TENT } from "../specs";
 import { make } from "../textures";
 import {
 	box,
@@ -19,6 +19,8 @@ import {
 export type Stove = Item & {
 	// Light out of the door glass and the two side windows.
 	fires: THREE.SpotLight[];
+	// The middle of the firebox, in the stove's own space.
+	fireCentre: THREE.Vector3;
 	// How bright the firelight is before flicker; set per time of day.
 	fireLevel: number;
 	// Flickers the flames and their light together; call every frame with
@@ -146,7 +148,14 @@ export function stove(): Stove {
 		towards: THREE.Vector3,
 		share: number,
 	) => {
-		const light = new THREE.SpotLight("#ff8a3c", 0, 9, 1.35, 1, 1.6);
+		const light = new THREE.SpotLight(
+			"#ff8a3c",
+			0,
+			TENT.lightReach,
+			1.35,
+			1,
+			1.6,
+		);
 		light.position.copy(at);
 		light.target.position.copy(at).add(towards);
 		light.shadow.mapSize.set(1024, 1024);
@@ -166,6 +175,7 @@ export function stove(): Stove {
 		),
 	];
 	result.fireLevel = 1;
+	result.fireCentre = v3(0, mid, 0);
 
 	// The stove is lit by its own fire from inside, so it never shadows it.
 	// (It stands inside the tent, out of the sun, so it casts no other

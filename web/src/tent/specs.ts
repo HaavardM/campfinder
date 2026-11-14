@@ -14,6 +14,12 @@
 // the 14.7 m² of a full circle.
 export const TENT = {
 	radius: 4.32 / 2,
+	// How far the stove's and the lantern's light reaches: about across the
+	// tent. Nothing here makes the cloth block light (that would need every
+	// inside light to cast shadows, which costs too much), so this stops it
+	// lighting the car and the ground outside; there, the fabric glows
+	// instead (see throughFabric in tent.ts).
+	lightReach: 3.2,
 	// How round the fabric is between the 10 points: 0 is a flat decagon
 	// (13.7 m² floor), 1 is a full circle (14.7 m²). 0.8 gives ~14.5 m².
 	roundness: 0.8,
@@ -81,7 +87,8 @@ export const FURNITURE = {
 	chair: { width: 0.52, depth: 0.5, height: 0.66, seat: 0.34 },
 	// Helinox Table One: 60 × 40 cm, 39 cm high.
 	table: { width: 0.6, depth: 0.4, height: 0.39 },
-	// A bigger camp table for summer, where the stove stands in winter.
+	// A bigger camp table for summer, where the stove stands in fall and
+	// winter.
 	// Helinox Table Two size, about 80 × 60 cm and 42 cm high (estimate).
 	bigTable: { width: 0.8, depth: 0.6, height: 0.42 },
 	// Heat-resistant mat under the stove.
