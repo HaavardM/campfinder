@@ -348,7 +348,8 @@ function ScoreLegend() {
 					className="size-2.5 shrink-0 border"
 					style={{ background: AREA_COLOUR, borderColor: AREA_OUTLINE_COLOUR }}
 				/>
-				Zoom in to see where it fits; click an area for aerial photos.
+				Zoom in to see where it fits, darker where flatter; click an area for
+				aerial photos.
 			</span>
 			<span className="flex items-center gap-1.5">
 				<span

@@ -17,7 +17,10 @@ import { type Lot, type ParkingLimit, RANK_DISTANCE } from "#/lib/parking";
 //   the area;
 // - from zoom 14, the areas where the tent fits (neighbouring 10 m spots
 //   merged into one shape) in orange, which stands out from both the green
-//   and the topo map. The surface fades out as they appear;
+//   and the topo map, darker where flatter: the areas at the flatter limits
+//   are filled too, underneath, each faintly, so where a 1° area lies
+//   inside the 2° and 3° ones the fills add up. Only the chosen limit's
+//   areas are outlined and clickable. The surface fades out as they appear;
 // - from zoom 11, parking lots from OpenStreetMap in blue, bigger the more
 //   flat ground for the tent they have around them: where to drive to.
 //   `bestParking` ranks the ones in view for the panel.
@@ -126,9 +129,10 @@ function nearParking(
 		: true;
 }
 
-// Areas near parking at full strength, the others faint. MapLibre wants
-// the zoom at the top of an expression, so the choice is made at each zoom
-// stop.
+// Areas near parking at full strength, the others faint. Each limit's fill
+// is faint on its own, so ground flat enough for all three is stronger than
+// ground only within 3°. MapLibre wants the zoom at the top of
+// an expression, so the choice is made at each zoom stop.
 function areaOpacity(
 	maxParking: ParkingLimit | undefined,
 ): ExpressionSpecification {
@@ -138,9 +142,9 @@ function areaOpacity(
 		["linear"],
 		["zoom"],
 		14,
-		["case", near, 0.3, 0.08],
+		["case", near, 0.2, 0.05],
 		16,
-		["case", near, 0.45, 0.12],
+		["case", near, 0.3, 0.08],
 	];
 }
 
@@ -210,6 +214,18 @@ function areasFilter(
 	];
 }
 
+// The areas at the flatter limits, for the shading underneath.
+function flatterFilter(
+	maxSlope: SlopeLimit,
+	minArea: number,
+): FilterSpecification {
+	return [
+		"all",
+		["<", ["get", "limit"], maxSlope],
+		[">=", ["get", "m2"], minArea],
+	];
+}
+
 export type FlatFilter = {
 	url: string; // the tent and season's file, as a pmtiles:// URL
 	maxSlope: SlopeLimit;
@@ -236,9 +252,12 @@ export function showFlat(map: MaplibreMap, filter: FlatFilter) {
 			"heatmap-weight",
 			score(maxSlope, maxParking),
 		);
+		map.setFilter("flat-areas-flatter", flatterFilter(maxSlope, minArea));
 		map.setFilter("flat-areas", areasFilter(maxSlope, minArea));
 		map.setFilter("flat-area-outlines", areasFilter(maxSlope, minArea));
-		map.setPaintProperty("flat-areas", "fill-opacity", areaOpacity(maxParking));
+		for (const layer of ["flat-areas-flatter", "flat-areas"]) {
+			map.setPaintProperty(layer, "fill-opacity", areaOpacity(maxParking));
+		}
 		map.setPaintProperty(
 			"flat-area-outlines",
 			"line-opacity",
@@ -287,6 +306,20 @@ export function showFlat(map: MaplibreMap, filter: FlatFilter) {
 				"rgba(0, 0, 0, 0)",
 				...SCORE_COLOURS.flat(),
 			],
+		},
+	});
+	// The shading: the flatter limits' areas, under the chosen limit's and
+	// in the same orange, not clickable.
+	map.addLayer({
+		id: "flat-areas-flatter",
+		type: "fill",
+		source: SOURCE,
+		"source-layer": "areas",
+		minzoom: 14,
+		filter: flatterFilter(maxSlope, minArea),
+		paint: {
+			"fill-color": AREA_COLOUR,
+			"fill-opacity": areaOpacity(maxParking),
 		},
 	});
 	// Orange from the legend's swatch (AREA_COLOUR), outlined so that even a

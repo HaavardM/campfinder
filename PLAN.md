@@ -135,7 +135,9 @@ downloads. Heading and elevation stay in the GeoTIFFs for QGIS.
 
 Zoomed out, the map shows **areas worth looking at**: a smooth surface,
 greener where there are more spots for the chosen tent. Zoomed in (from
-zoom 14), it shows the spots themselves, merged into orange areas.
+zoom 14), it shows the spots themselves, merged into orange areas,
+darker where flatter (the areas of every limit up to the chosen one are
+filled faintly, so they add up where they overlap).
 
 - **Spot:** a 10 m cell where the tent fits within the chosen max slope.
 - **Score per square:** the square root of the share of its cells that are
