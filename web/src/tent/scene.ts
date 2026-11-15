@@ -127,6 +127,8 @@ partnersChair.add(partner);
 const theCar = car();
 const theSkis = skis();
 const pulks = [pulk("#2f4d3c"), pulk("#3d4652")];
+const theFridge = fridge();
+const theEcoflow = ecoflow();
 const theWoodBox = woodBox();
 const bigTable = table(
 	"Camp table (Helinox Table Two size)",
@@ -168,8 +170,8 @@ const LAYOUT: [Item, x: number, z: number, turn: number][] = [
 	// Your partner's duffel, in the corner by the closed back door at the
 	// head of her cot.
 	[duffel("#26282b"), -1.15, -1.1, -60],
-	[fridge(), -1.55, 0.45, 90], // by the closed back door, your side
-	[ecoflow(), -1.55, 0.97, 90], // power station beside the fridge, in the corner by the wall
+	[theFridge, -1.55, 0.45, 90], // by the closed back door, your side
+	[theEcoflow, -1.55, 0.97, 90], // power station beside the fridge, in the corner by the wall
 	// Stowed between the cots and the walls, where the roof is too low to
 	// stand but plenty for gear.
 	[goBox(), 0.15, 1.75, 0], // behind your cot
@@ -185,7 +187,8 @@ const items = LAYOUT.map(([it]) => it);
 
 // The gear that comes and goes with the season, and the seasons it's there
 // in. Fall and winter: the stove and its firewood. Summer: no stove, a big
-// table in its place. In winter we come on skis and pulks, not by car.
+// table in its place. In winter we come on skis and pulks, not by car,
+// and leave the fridge and the power station at home.
 const SEASONAL: [Item, Season[]][] = [
 	[theStove, ["fall", "winter"]],
 	[theWoodBox, ["fall", "winter"]],
@@ -194,6 +197,8 @@ const SEASONAL: [Item, Season[]][] = [
 	[theCar, ["summer", "fall"]],
 	[theSkis, ["winter"]],
 	...pulks.map((p): [Item, Season[]] => [p, ["winter"]]),
+	[theFridge, ["summer", "fall"]],
+	[theEcoflow, ["summer", "fall"]],
 ];
 
 // In summer there's no fire to watch: you sit across the table from each
