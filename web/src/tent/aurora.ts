@@ -36,22 +36,33 @@ export function aurora(): THREE.Mesh<
 				float up = asin(d.y);
 				// Strongest towards north (-z), gone behind you.
 				float north = smoothstep(1.9, 0.4, abs(around + 1.5708));
+				// Most of the dome stays dark; skip the work there.
+				if (north <= 0.0) {
+					gl_FragColor = vec4(0.0);
+					return;
+				}
 
 				vec3 colour = vec3(0.0);
 				for (int i = 0; i < 2; i++) {
 					float k = float(i);
-					// The lower edge, 12 to 25 degrees up, slowly snaking.
+					// The lower edge, 12 to 25 degrees up, snaking, with small
+					// folds running along it.
 					float edge = 0.22 + k * 0.12
-						+ 0.08 * sin(around * 2.0 + time * 0.04 + k * 2.0)
-						+ 0.04 * sin(around * 5.0 - time * 0.07 + k);
+						+ 0.08 * sin(around * 2.0 + time * 0.16 + k * 2.0)
+						+ 0.04 * sin(around * 5.0 - time * 0.25 + k)
+						+ 0.012 * sin(around * 23.0 + time * 1.1 + k * 4.0);
 					float above = up - edge;
 					float curtain = smoothstep(-0.015, 0.01, above) * exp(-max(above, 0.0) * (7.0 - k * 2.0));
-					float rays = 0.35 + 0.65 * noise(vec2(around * 60.0 + k * 13.0, time * 0.15));
-					rays *= 0.6 + 0.4 * noise(vec2(around * 12.0 - time * 0.05, k));
+					if (curtain < 0.002) continue;
+					// Fine rays that flicker and travel sideways along the curtain.
+					float rays = 0.3 + 0.7 * noise(vec2(around * 60.0 + time * 0.5 + k * 13.0, time * 0.8));
+					rays *= 0.6 + 0.4 * noise(vec2(around * 12.0 - time * 0.2, k));
+					// Patches that slowly swell and fade.
+					float swell = 0.55 + 0.45 * noise(vec2(around * 3.0 + k * 7.0, time * 0.25));
 					vec3 hue = mix(vec3(0.1, 1.0, 0.45), vec3(0.7, 0.2, 0.65), smoothstep(0.05, 0.25, above));
-					colour += hue * curtain * rays * (1.0 - k * 0.4);
+					colour += hue * curtain * rays * swell * (1.0 - k * 0.4);
 				}
-				gl_FragColor = vec4(colour * north * 0.5, 1.0);
+				gl_FragColor = vec4(colour * north * 0.6, 1.0);
 			}
 		`,
 	});
