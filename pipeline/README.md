@@ -26,9 +26,10 @@ What `run.sh` does:
 | Step | What | Time |
 |---|---|---|
 | `prepare_no_go.sh` | Per region: download the N50 map data of its counties (`N50_COUNTIES`, 0.2–0.7 GB each, once) and collect where no tent may go into `data/no-go/<region>.gpkg`, with GDAL: water and streams (+2 m of shore), bogs, farmland, industry, golf courses and other land in use, 1 km around airports and runways, roads (+8 m), tracks and trails, and 150 m around houses, cabins and built-up areas | a few seconds per county, once per region |
+| `prepare_parking.sh` | Download OpenStreetMap's Norway extract from Geofabrik (1.3 GB, once; delete it to refresh) and collect every parking lot a hiker may use into `data/parking/parking.gpkg`, with GDAL | a few minutes, only when the download or the queries change |
 | `flatness` (Rust) | Downloads terrain and surface tiles 8 at a time (17 MB each, from Kartverket's WCS) and processes each tile as soon as both are there, on every CPU | downloads: ~8 s per file and connection; processing: ~0.5 s per tile per core |
 | `gdalbuildvrt` | One mosaic per result, for QGIS | seconds |
-| `build_map.sh` | The map's files in `data/map/`: `mapfiles` (Rust) turns every tile's 10 m slopes into heatmap points (spot counts per square and zoom) and areas (connected spots at 1°, 2° and 3°, outlines traced), and tippecanoe packs them into one PMTiles file per tent and season (named by a hash of its content), plus `manifest.json`. Publish with `publish.sh` | minutes for all regions |
+| `build_map.sh` | The map's files in `data/map/`: `mapfiles` (Rust) turns every tile's 10 m slopes into heatmap points (spot counts per square and zoom) and areas (connected spots at 1°, 2° and 3°, outlines traced, with the distance to parking) and the parking lots (with the flat ground within 250 m–2 km of each), and tippecanoe packs them into one PMTiles file per tent and season (named by a hash of its content), plus `manifest.json`. Publish with `publish.sh` | minutes for all regions |
 
 Downloaded tiles are stored compressed without loss, about 7.5 MB instead of
 16.8 (deflate after TIFF's floating-point predictor; see
@@ -63,6 +64,9 @@ data/
   n50/Basisdata_34_…_FGDB.zip  Kartverket's N50 map data, per county
   no-go/rondane.gpkg           where no tent may go, one GeoPackage per region
   no-go/rondane.recipe         fingerprint of the queries that made it
+  osm/norway-latest.osm.pbf    OpenStreetMap's Norway extract (Geofabrik)
+  parking/parking.gpkg         parking lots, one point each (UTM 33)
+  parking/parking.recipe       fingerprint of the queries that made it
   dtm/E0220000_N6864000.tif    terrain, 2016 × 2016 px of 1 m (tile + 8 m border)
   dom/E0220000_N6864000.tif    surface (treetops, bushes, roofs), same pixels
   dtm/E0046000_N6808000.no-land  no land here (all sea on the N50 map, or an

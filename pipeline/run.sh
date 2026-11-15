@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The whole pipeline: no-go areas, download + process, QGIS mosaics, and the
-# map's files (data/map/).
+# The whole pipeline: no-go areas, parking, download + process, QGIS
+# mosaics, and the map's files (data/map/).
 #
 # Usage: ./run.sh [options] [regions/x.env ...]
 #
@@ -20,6 +20,7 @@ if [[ " $* " != *".env "* ]]; then
   done
 fi
 
+./prepare_parking.sh
 # Both take the same arguments: prepare_no_go.sh skips the options.
 ./prepare_no_go.sh "$@"
 cargo build --release --quiet --manifest-path flatness/Cargo.toml

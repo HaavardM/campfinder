@@ -9,12 +9,21 @@
 //!
 //! - `<tent>.<season>.points.geojsonl`: the zoomed-out heatmap. One point
 //!   per square (80 m at zoom 12, doubling with each zoom out to zoom 5),
-//!   with how many of its 10 m cells are spots at up to 1°, 2° and 3°.
+//!   with how many of its 10 m cells are spots at up to 1°, 2° and 3°, in
+//!   all and within each of the distances to parking.
 //! - `<tent>.<season>.areas.geojsonl`: the zoomed-in areas. For each of
 //!   those slope limits, neighbouring spot cells joined into one polygon,
-//!   with its size and a point inside it.
+//!   with its size, a point inside it, and how far its nearest cell is from
+//!   parking.
 //!
-//! tippecanoe packs each pair into `<tent>.<season>.<hash>.pmtiles`.
+//! - `<tent>.<season>.parking.geojsonl`: the parking lots in and around the
+//!   tiles, from `data/parking/parking.gpkg` (see prepare_parking.sh), with
+//!   how much flat ground for the tent is within each distance, per slope
+//!   limit: which lots are worth driving to.
+//!
+//! Distances to parking are straight lines from a cell's middle.
+//! tippecanoe packs each tent and season's three into
+//! `<tent>.<season>.<hash>.pmtiles`.
 //! `manifest` then writes `manifest.json` for the web app: the tents, and
 //! the file for each tent and season found in MAP_DIR.
 //!
@@ -29,6 +38,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use flatness::geotiff;
+use flatness::parking::{Lot, Parking, load_lots};
 use flatness::region::parse_tile_name;
 use flatness::tents::TentsFile;
 use flatness::tile::{CELL_SIZE_M, CELLS_PER_SIDE, TILE_SIZE_M};
@@ -46,10 +56,83 @@ const POINTS_MAX_ZOOM: u32 = 15;
 const SQUARE_CELLS: i32 = 8;
 /// The areas are drawn from this zoom.
 const AREAS_MIN_ZOOM: u32 = 14;
+/// The distances to parking the map offers, in metres (PARKING_LIMITS in
+/// the web app). Farther than the last counts as no parking near.
+const PARKING_LIMITS: [u16; 4] = [250, 500, 1000, 2000];
+/// The parking lots are in the tiles from this zoom: the map draws them
+/// from zoom 11, but lists the best ones in view from here.
+const PARKING_MIN_ZOOM: u32 = 9;
 
 /// A cell's position on the 10 m grid: x / 10 and y / 10 of its south-west
 /// corner in UTM 33 metres.
 type Cell = (i32, i32);
+
+/// A spot cell: its slope in tenths of a degree, and how far its middle is
+/// from the nearest parking, in whole metres, if within the last limit.
+#[derive(Clone, Copy)]
+struct Spot {
+    tenths: u8,
+    parking_m: Option<u16>,
+}
+
+/// Spot counts by slope limit and distance to parking: `[l][p]` counts the
+/// spots at up to `LIMITS[l]` within `PARKING_LIMITS[p]`. Used for a
+/// heatmap square (distance to the nearest lot) and for a lot (distance to
+/// that lot).
+#[derive(Clone, Copy, Default)]
+struct Near([[u32; PARKING_LIMITS.len()]; LIMITS.len()]);
+
+impl Near {
+    /// Counts a spot with `tenths` of slope, `m` metres from parking.
+    fn count(&mut self, tenths: u8, m: f64) {
+        for (l, limit) in LIMITS.into_iter().enumerate() {
+            if tenths > limit * 10 {
+                continue;
+            }
+            for (p, max_m) in PARKING_LIMITS.into_iter().enumerate() {
+                if m <= max_m as f64 {
+                    self.0[l][p] += 1;
+                }
+            }
+        }
+    }
+
+    fn add(&mut self, other: &Near) {
+        for (row, other_row) in self.0.iter_mut().zip(other.0) {
+            for (count, other_count) in row.iter_mut().zip(other_row) {
+                *count += other_count;
+            }
+        }
+    }
+}
+
+/// A heatmap square's spot counts per slope limit: in all, and within each
+/// distance to parking.
+#[derive(Clone, Copy, Default)]
+struct Counts {
+    all: [u32; LIMITS.len()],
+    near: Near,
+}
+
+impl Counts {
+    fn count(&mut self, spot: Spot) {
+        for (count, limit) in self.all.iter_mut().zip(LIMITS) {
+            if spot.tenths <= limit * 10 {
+                *count += 1;
+            }
+        }
+        if let Some(m) = spot.parking_m {
+            self.near.count(spot.tenths, m as f64);
+        }
+    }
+
+    fn add(&mut self, other: &Counts) {
+        for (count, other_count) in self.all.iter_mut().zip(other.all) {
+            *count += other_count;
+        }
+        self.near.add(&other.near);
+    }
+}
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -100,14 +183,29 @@ fn geojson(data: &Path, out: &Path) {
         }
     }
 
+    // Best effort: without the parking file the map is made all the same,
+    // just without parking.
+    let lots = load_lots(&data.join("parking/parking.gpkg")).unwrap_or_else(|e| {
+        eprintln!("No parking ({e}): run prepare_parking.sh for parking on the map");
+        Vec::new()
+    });
+    let parking = Parking::new(lots_near_tiles(lots, &tiles), *PARKING_LIMITS.last().unwrap() as f64);
+    println!("{} parking lots in and around the tiles", parking.lots.len());
+
     for (tent, season) in &kinds {
         let started = std::time::Instant::now();
-        let spots = read_spots(&tiles, tent, season);
+        let spots = read_spots(&tiles, tent, season, &parking);
         let file = |what: &str| out.join(format!("{tent}.{season}.{what}.geojsonl"));
-        // The heatmap and the areas are independent: build both at once.
-        let (points, areas) = rayon::join(
+        // The heatmap, the areas and the parking are independent: build all
+        // at once.
+        let (points, (areas, ())) = rayon::join(
             || write_points(&file("points"), &spots),
-            || write_areas(&file("areas"), &spots),
+            || {
+                rayon::join(
+                    || write_areas(&file("areas"), &spots),
+                    || write_parking(&file("parking"), &parking, &spots),
+                )
+            },
         );
         println!(
             "{tent} {season}: {} spot cells, {points} heatmap points, {areas} areas ({:.1} s)",
@@ -117,6 +215,27 @@ fn geojson(data: &Path, out: &Path) {
     }
 }
 
+/// The parking lots worth knowing about: those in a tile with results or one
+/// next to it, so lots just outside a region, which its spots reach, count
+/// too. Leaves out the rest of Norway's.
+fn lots_near_tiles(lots: Vec<Lot>, tiles: &[Tile]) -> Vec<Lot> {
+    let size = TILE_SIZE_M as i64;
+    let tiles: HashSet<(i64, i64)> =
+        tiles.iter().map(|&(_, east, north)| (east as i64 / size, north as i64 / size)).collect();
+    lots.into_iter()
+        .filter(|lot| {
+            let (tx, ty) = ((lot.x as i64).div_euclid(size), (lot.y as i64).div_euclid(size));
+            (-1..=1).any(|dx| (-1..=1).any(|dy| tiles.contains(&(tx + dx, ty + dy))))
+        })
+        .collect()
+}
+
+/// The middle of a cell, in UTM 33 metres.
+fn middle((x, y): Cell) -> (f64, f64) {
+    let size = CELL_SIZE_M as f64;
+    ((x as f64 + 0.5) * size, (y as f64 + 0.5) * size)
+}
+
 /// UTM 33 metres to longitude and latitude.
 fn to_lon_lat() -> Transformer {
     let utm33 = SpatialRef::from_epsg(25833).unwrap();
@@ -124,9 +243,9 @@ fn to_lon_lat() -> Transformer {
 }
 
 /// Every spot cell up to the largest limit, with its slope in tenths of a
-/// degree, as the engine stores them (rounded up: never flatter than it is).
-/// Tiles are read in parallel.
-fn read_spots(tiles: &[Tile], tent: &str, season: &str) -> HashMap<Cell, u8> {
+/// degree, as the engine stores them (rounded up: never flatter than it is),
+/// and its distance to parking. Tiles are read in parallel.
+fn read_spots(tiles: &[Tile], tent: &str, season: &str, parking: &Parking) -> HashMap<Cell, Spot> {
     let max_tenths = *LIMITS.last().unwrap() as f32 * 10.0;
     tiles
         .par_iter()
@@ -145,7 +264,10 @@ fn read_spots(tiles: &[Tile], tent: &str, season: &str) -> HashMap<Cell, u8> {
                     (tenths <= max_tenths).then(|| {
                         let (row, col) = (i / CELLS_PER_SIDE, i % CELLS_PER_SIDE);
                         // Row 0 is the tile's northern edge.
-                        ((x0 + col as i32, y_top - 1 - row as i32), tenths.max(0.0) as u8)
+                        let cell = (x0 + col as i32, y_top - 1 - row as i32);
+                        let (x, y) = middle(cell);
+                        let parking_m = parking.nearest_m(x, y).map(|m| m.round() as u16);
+                        (cell, Spot { tenths: tenths.max(0.0) as u8, parking_m })
                     })
                 })
             })
@@ -153,21 +275,19 @@ fn read_spots(tiles: &[Tile], tent: &str, season: &str) -> HashMap<Cell, u8> {
         .collect()
 }
 
-/// The heatmap: per square and zoom, how many cells are spots at each limit.
-/// Counts zoom 12's 80 m squares from the cells, then each coarser zoom from
-/// the one before (2 × 2 squares make one). Returns how many points.
-fn write_points(path: &Path, spots: &HashMap<Cell, u8>) -> usize {
+/// The heatmap: per square and zoom, how many cells are spots at each limit,
+/// in all (`c1`, `c2`, `c3`) and within each distance to parking (`c3_500`:
+/// spots at up to 3° within 500 m; left out when 0, which most squares
+/// are, to keep the tiles small). Counts zoom 12's 80 m squares from the
+/// cells, then each coarser zoom from the one before (2 × 2 squares make
+/// one). Returns how many points.
+fn write_points(path: &Path, spots: &HashMap<Cell, Spot>) -> usize {
     let to_lon_lat = to_lon_lat();
     let mut out = BufWriter::new(File::create(path).unwrap());
-    let mut squares: HashMap<Cell, [u32; LIMITS.len()]> = HashMap::new();
+    let mut squares: HashMap<Cell, Counts> = HashMap::new();
     let shift = SQUARE_CELLS.trailing_zeros(); // cell → 80 m square
-    for (&(x, y), &tenths) in spots {
-        let counts = squares.entry((x >> shift, y >> shift)).or_default();
-        for (count, limit) in counts.iter_mut().zip(LIMITS) {
-            if tenths <= limit * 10 {
-                *count += 1;
-            }
-        }
+    for (&(x, y), &spot) in spots {
+        squares.entry((x >> shift, y >> shift)).or_default().count(spot);
     }
     let mut written = 0;
     for zoom in (MIN_ZOOM..=SQUARE_ZOOM).rev() {
@@ -178,22 +298,32 @@ fn write_points(path: &Path, spots: &HashMap<Cell, u8>) -> usize {
             let (lon, lat) = to_lon_lat
                 .transform((sx as f64 + 0.5) * size_m, (sy as f64 + 0.5) * size_m)
                 .unwrap();
-            let [c1, c2, c3] = *counts;
+            let [c1, c2, c3] = counts.all;
             let n = cells_wide * cells_wide;
+            write!(
+                out,
+                r#"{{"type":"Feature","tippecanoe":{{"minzoom":{zoom},"maxzoom":{max_zoom}}},"properties":{{"c1":{c1},"c2":{c2},"c3":{c3},"n":{n}"#
+            )
+            .unwrap();
+            for (l, limit) in LIMITS.into_iter().enumerate() {
+                for (p, max_m) in PARKING_LIMITS.into_iter().enumerate() {
+                    let count = counts.near.0[l][p];
+                    if count > 0 {
+                        write!(out, r#","c{limit}_{max_m}":{count}"#).unwrap();
+                    }
+                }
+            }
             writeln!(
                 out,
-                r#"{{"type":"Feature","tippecanoe":{{"minzoom":{zoom},"maxzoom":{max_zoom}}},"properties":{{"c1":{c1},"c2":{c2},"c3":{c3},"n":{n}}},"geometry":{{"type":"Point","coordinates":[{lon:.6},{lat:.6}]}}}}"#
+                r#"}},"geometry":{{"type":"Point","coordinates":[{lon:.6},{lat:.6}]}}}}"#
             )
             .unwrap();
             written += 1;
         }
         // One zoom out: halving a square's number finds its parent.
-        let mut coarser: HashMap<Cell, [u32; LIMITS.len()]> = HashMap::new();
+        let mut coarser: HashMap<Cell, Counts> = HashMap::new();
         for ((sx, sy), counts) in squares {
-            let parent = coarser.entry((sx >> 1, sy >> 1)).or_default();
-            for (sum, count) in parent.iter_mut().zip(counts) {
-                *sum += count;
-            }
+            coarser.entry((sx >> 1, sy >> 1)).or_default().add(&counts);
         }
         squares = coarser;
     }
@@ -202,15 +332,17 @@ fn write_points(path: &Path, spots: &HashMap<Cell, u8>) -> usize {
 }
 
 /// The areas: for each limit, neighbouring spot cells (sharing an edge)
-/// joined into polygons. Returns how many were written.
-fn write_areas(path: &Path, spots: &HashMap<Cell, u8>) -> usize {
+/// joined into polygons. `parking_m` is how far the area's nearest cell is
+/// from parking, left out when there's none within the last limit.
+/// Returns how many were written.
+fn write_areas(path: &Path, spots: &HashMap<Cell, Spot>) -> usize {
     let to_lon_lat = to_lon_lat();
     let mut out = BufWriter::new(File::create(path).unwrap());
     let mut written = 0;
     for limit in LIMITS {
         let cells: HashSet<Cell> = spots
             .iter()
-            .filter(|&(_, &tenths)| tenths <= limit * 10)
+            .filter(|&(_, spot)| spot.tenths <= limit * 10)
             .map(|(&cell, _)| cell)
             .collect();
         let mut seen: HashSet<Cell> = HashSet::new();
@@ -225,9 +357,13 @@ fn write_areas(path: &Path, spots: &HashMap<Cell, u8>) -> usize {
             // of its cells.
             let half = CELL_SIZE_M as i32 / 2;
             let (x, y) = (start.0 * CELL_SIZE_M as i32 + half, start.1 * CELL_SIZE_M as i32 + half);
+            let parking = match area.iter().filter_map(|cell| spots[cell].parking_m).min() {
+                Some(m) => format!(r#","parking_m":{m}"#),
+                None => String::new(),
+            };
             write!(
                 out,
-                r#"{{"type":"Feature","tippecanoe":{{"minzoom":{AREAS_MIN_ZOOM}}},"properties":{{"limit":{limit},"m2":{},"x":{x},"y":{y}}},"geometry":{{"type":"MultiPolygon","coordinates":["#,
+                r#"{{"type":"Feature","tippecanoe":{{"minzoom":{AREAS_MIN_ZOOM}}},"properties":{{"limit":{limit},"m2":{},"x":{x},"y":{y}{parking}}},"geometry":{{"type":"MultiPolygon","coordinates":["#,
                 area.len() * CELL_SIZE_M * CELL_SIZE_M,
             )
             .unwrap();
@@ -247,6 +383,63 @@ fn write_areas(path: &Path, spots: &HashMap<Cell, u8>) -> usize {
     }
     out.flush().unwrap();
     written
+}
+
+/// The parking lots, each with how much flat ground the tent has around it:
+/// `m3_500` is the m² of spot cells at up to 3° within 500 m (left out when
+/// 0). Every spot counts for every lot it's in reach of, so a lot's number
+/// doesn't depend on other lots nearby.
+fn write_parking(path: &Path, parking: &Parking, spots: &HashMap<Cell, Spot>) {
+    // Each spot adds itself to the lots around it. In parallel: each thread
+    // adds up its share of the spots in a table of its own (`fold`), then
+    // the tables are summed (`reduce_with`, which, unlike `reduce`, doesn't
+    // start each sum from yet another empty table), so no thread waits on
+    // another.
+    let empty = || vec![Near::default(); parking.lots.len()];
+    let around = spots
+        .par_iter()
+        .fold(empty, |mut around, (&cell, spot)| {
+            let (x, y) = middle(cell);
+            for (lot, m) in parking.within(x, y) {
+                around[lot].count(spot.tenths, m);
+            }
+            around
+        })
+        .reduce_with(|mut sum, part| {
+            for (lot_sum, lot_part) in sum.iter_mut().zip(&part) {
+                lot_sum.add(lot_part);
+            }
+            sum
+        })
+        .unwrap_or_else(empty);
+
+    let to_lon_lat = to_lon_lat();
+    let mut out = BufWriter::new(File::create(path).unwrap());
+    let cell_m2 = (CELL_SIZE_M * CELL_SIZE_M) as u32;
+    for (lot, around) in parking.lots.iter().zip(around) {
+        let (lon, lat) = to_lon_lat.transform(lot.x, lot.y).unwrap();
+        let mut properties = serde_json::json!({ "osm_id": lot.osm_id, "hiking": lot.hiking });
+        if let Some(name) = &lot.name {
+            properties["name"] = name.as_str().into();
+        }
+        if let Some(fee) = &lot.fee {
+            properties["fee"] = fee.as_str().into();
+        }
+        for (l, limit) in LIMITS.into_iter().enumerate() {
+            for (p, max_m) in PARKING_LIMITS.into_iter().enumerate() {
+                let count = around.0[l][p];
+                if count > 0 {
+                    properties[format!("m{limit}_{max_m}")] = (count * cell_m2).into();
+                }
+            }
+        }
+        writeln!(
+            out,
+            r#"{{"type":"Feature","tippecanoe":{{"minzoom":{PARKING_MIN_ZOOM}}},"properties":{properties},"geometry":{{"type":"Point","coordinates":[{lon:.6},{lat:.6}]}}}}"#
+        )
+        .unwrap();
+    }
+    out.flush().unwrap();
 }
 
 /// All cells reachable from `start` through cells that share an edge (a

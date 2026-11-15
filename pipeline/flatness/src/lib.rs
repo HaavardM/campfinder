@@ -17,6 +17,7 @@ pub mod download;
 pub mod geotiff;
 pub mod grid;
 pub mod no_go;
+pub mod parking;
 pub mod region;
 pub mod rotate;
 pub mod sliding_max;

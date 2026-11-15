@@ -19,7 +19,8 @@ rm -rf "$build"
 mkdir -p "$build"
 
 (cd flatness && cargo build --release --quiet --bin mapfiles)
-# GeoJSON per tent and season: points for the heatmap, and the areas.
+# GeoJSON per tent and season: points for the heatmap, the areas, and the
+# parking lots with the flat ground around each.
 flatness/target/release/mapfiles geojson "$build"
 
 # One tippecanoe per tent and season, all at once (each is partly serial).
@@ -31,7 +32,7 @@ for points in "$build"/*.points.geojsonl; do
   name=$(basename "$points" .points.geojsonl) # keron-4-gt.summer
   tippecanoe --quiet --force --read-parallel -Z5 -z16 -r1 -t "$build" \
     --no-feature-limit --no-tile-size-limit --no-tile-stats \
-    -L "scores:$points" -L "areas:$build/$name.areas.geojsonl" \
+    -L "scores:$points" -L "areas:$build/$name.areas.geojsonl" -L "parking:$build/$name.parking.geojsonl" \
     -o "$build/$name.pmtiles" &
 done
 wait

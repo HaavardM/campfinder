@@ -40,7 +40,7 @@ default. Results move to the Mac with `pg_dump` / `pg_restore`.
 | Water, bogs, streams, farmland, buildings | Kartverket N50 | No-go areas (150 m around houses and cabins) |
 | Basemap | Kartverket topo and grey topo (WMTS) | Map background |
 | Place names | Kartverket place-name API | Search |
-| Later: roads, parking | OpenStreetMap (Geofabrik) | Where you can drive and park |
+| Parking | OpenStreetMap (Geofabrik) | Which parking lots have flat ground in reach |
 | Later: land cover | NIBIO AR5 / AR50 | Prefer open heath |
 | Later: protected areas | Miljødirektoratet Naturbase | Show park rules |
 
@@ -119,7 +119,11 @@ manifest.json                   tents, and which file is which tent and season
            doubling outwards): c1, c2, c3 = cells that are spots at up to
            1°, 2°, 3°; n = cells
   areas    zoom 14–16: connected spots at each limit, outlines traced:
-           limit (1, 2, 3), m2, x/y (a UTM point inside)
+           limit (1, 2, 3), m2, x/y (a UTM point inside), parking_m
+           (straight line from the nearest cell to parking, if ≤ 2 km)
+  parking  zoom 9–16: OSM parking lots in and around the tiles: osm_id,
+           name, hiking, fee, and m3_500 etc. = m² of spots at ≤ 3°
+           within 500 m (also 250 m, 1 km, 2 km; each limit)
 ```
 
 PMTiles holds every tile in one file with an index, so the browser reads
@@ -142,8 +146,14 @@ zoom 14), it shows the spots themselves, merged into orange areas.
   interpolates rather than piling up (see `web/src/lib/flat-layers.ts`).
 - **Min area:** orange areas smaller than this (default 300 m²) are hidden:
   a lone 10 m cell is more often noise than a campsite.
-- **Controls:** tent, summer/winter, max slope, min area, place search,
-  region buttons, topo/grey basemap; everything kept in the URL.
+- **Parking:** blue dots sized by the flat ground around them, and a
+  "best parking in view" list, ranked: which lot to drive to. With a
+  distance chosen, the surface only counts spots that close to a lot, and
+  areas farther away are dimmed rather than hidden (OSM misses lots).
+  Distances are straight lines for now.
+- **Controls:** tent, summer/winter, max slope, min area, close to
+  parking, place search, region buttons, topo/grey basemap; everything kept
+  in the URL.
 - **Look before driving:** click an area to open it in Norge i bilder
   (Kartverket's aerial photos, also 3D; a website link, since its map
   services need a licence), or open the view in Google's satellite photos.
@@ -159,9 +169,9 @@ zoom 14), it shows the spots themselves, merged into orange areas.
    (First served from PostGIS; now static PMTiles files, so the whole app
    can live in a bucket.)
 4. **Spot details.** Click a cell to see its details and tent outline.
-5. **Later.** Roads and parking with distance filters, small ponds (from
-   the lidar), protected-area rules, saved spots, walking distance over
-   trails.
+5. **Later.** Walking time from parking (over terrain and trails) instead
+   of straight lines, small ponds (from the lidar), protected-area rules,
+   saved spots.
 
 ## Caveats
 
