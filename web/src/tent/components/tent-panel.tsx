@@ -61,9 +61,14 @@ export function TentPanel(props: {
 	measure: boolean;
 	onMeasureChange: (on: boolean) => void;
 }) {
-	const [view, setView] = useState<View>("sit");
-	const [time, setTime] = useState<TimeOfDay>("day");
-	const [season, setSeason] = useState<Season>("fall");
+	// Kept in the address, so a reload or a shared link opens the same view.
+	const [view, setView] = useInAddress<View>("view", VIEWS, "sit");
+	const [time, setTime] = useInAddress<TimeOfDay>("time", TIMES, "day");
+	const [season, setSeason] = useInAddress<Season>(
+		"season",
+		SEASON_BUTTONS,
+		"fall",
+	);
 	const [who, setWho] = useState<Who>("you");
 	const [doors, setDoors] = useState(["front"]);
 	const [seeThrough, setSeeThrough] = useState(false);
@@ -351,6 +356,26 @@ function Selected({ item }: { item: NonNullable<Info> }) {
 			</div>
 		</div>
 	);
+}
+
+// A choice kept in the page address as `?key=value`: read from it at
+// first, written back on every change. `choices` are the buttons it comes
+// from; anything else in the address falls back to `start`.
+function useInAddress<T extends string>(
+	key: string,
+	choices: [T, ...unknown[]][],
+	start: T,
+) {
+	const [value, setValue] = useState<T>(() => {
+		const given = new URLSearchParams(window.location.search).get(key);
+		return choices.find(([choice]) => choice === given)?.[0] ?? start;
+	});
+	useEffect(() => {
+		const url = new URL(window.location.href);
+		url.searchParams.set(key, value);
+		window.history.replaceState(null, "", url);
+	}, [key, value]);
+	return [value, setValue] as const;
 }
 
 // The whole page in full screen, and whether it is.
