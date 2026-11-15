@@ -6,34 +6,30 @@ import {
 	Satellite,
 	X,
 } from "lucide-react";
-import { type LngLat, type Map as MaplibreMap, Popup } from "maplibre-gl";
+import type { LngLat, Map as MaplibreMap } from "maplibre-gl";
 import { useState } from "react";
-import { createRoot } from "react-dom/client";
+import { openPopup } from "#/components/map-popup";
 import { Button } from "#/components/ui/button";
+import { formatDistance, MAX_PARKING_M } from "#/lib/parking";
 import { googleSatelliteUrl, norgeIBilderUrl } from "#/lib/photo-links";
 
 // A flat area as the map files describe it (pipeline's mapfiles.rs): its
-// size, the slope limit it was found at, and a point inside it in UTM 33
-// metres.
-export type Area = { m2: number; limit: number; x: number; y: number };
+// size, the slope limit it was found at, a point inside it in UTM 33
+// metres, and how far its nearest part is from parking in a straight line
+// (missing when no lot is within MAX_PARKING_M).
+export type Area = {
+	m2: number;
+	limit: number;
+	x: number;
+	y: number;
+	parking_m?: number;
+};
 
-// Opens the popup for a flat area at `at`. A click elsewhere on the map
-// closes it. MapLibre owns the popup's box, React draws what's inside.
+// Opens the popup for a flat area at `at`.
 export function showSpotPopup(map: MaplibreMap, at: LngLat, area: Area) {
-	const container = document.createElement("div");
-	const root = createRoot(container);
-	const popup = new Popup({
-		className: "spot-popup",
-		closeButton: false,
-		maxWidth: "none",
-		offset: 8,
-	})
-		.setLngLat(at)
-		.setDOMContent(container)
-		.addTo(map);
-	// Not straight away: the close can come from a click React is handling.
-	popup.on("close", () => queueMicrotask(() => root.unmount()));
-	root.render(<SpotPopup area={area} at={at} onClose={() => popup.remove()} />);
+	openPopup(map, at, (close) => (
+		<SpotPopup area={area} at={at} onClose={close} />
+	));
 }
 
 function SpotPopup({
@@ -82,6 +78,11 @@ function SpotPopup({
 					</div>
 					<div className="text-muted-foreground text-xs">
 						Slopes up to {area.limit}° under the tent
+					</div>
+					<div className="text-muted-foreground text-xs">
+						{area.parking_m === undefined
+							? `No parking known within ${formatDistance(MAX_PARKING_M)}`
+							: `Parking ${formatDistance(area.parking_m)} away, as the crow flies`}
 					</div>
 				</div>
 				<Button

@@ -1,10 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 
 import { MapPanel } from "#/components/map-panel";
+import { showParkingPopup } from "#/components/parking-popup";
 import { type Basemap, isBasemap, showBasemap } from "#/lib/basemaps";
-import { isSlopeLimit, type SlopeLimit, showFlat } from "#/lib/flat-layers";
+import {
+	bestParking,
+	isSlopeLimit,
+	type RankedLot,
+	type SlopeLimit,
+	showFlat,
+} from "#/lib/flat-layers";
 import { showHillshade } from "#/lib/hillshade";
 import { type Manifest, pmtilesUrl } from "#/lib/map-data";
+import { isParkingLimit, type ParkingLimit } from "#/lib/parking";
 import { googleSatelliteUrl } from "#/lib/photo-links";
 import { isSeason, type Season } from "#/lib/seasons";
 import { showTrails } from "#/lib/trails";
@@ -18,6 +26,7 @@ type MapSearch = MapView & {
 	season: Season;
 	maxSlope: SlopeLimit; // degrees: the limits the files have
 	minArea: number; // m²: smaller areas with room for the tent are left out
+	parking?: ParkingLimit; // m: spots this close to parking stand out
 	trails: boolean; // marked trails: hiking in summer, ski in winter
 	hillshade: boolean; // the 1 m terrain model, lit from the side
 };
@@ -49,6 +58,7 @@ function readSearch(params: URLSearchParams): MapSearch {
 	const basemap = params.get("basemap");
 	const season = params.get("season");
 	const maxSlope = numberIn(params, "maxSlope");
+	const parking = numberIn(params, "parking");
 	return {
 		lat: numberOr(numberIn(params, "lat"), RONDANE.lat),
 		lon: numberOr(numberIn(params, "lon"), RONDANE.lon),
@@ -58,6 +68,7 @@ function readSearch(params: URLSearchParams): MapSearch {
 		season: isSeason(season) ? season : RONDANE.season,
 		maxSlope: isSlopeLimit(maxSlope) ? maxSlope : RONDANE.maxSlope,
 		minArea: numberOr(numberIn(params, "minArea"), RONDANE.minArea),
+		parking: isParkingLimit(parking) ? parking : undefined,
 		trails: params.get("trails") === "true",
 		hillshade: params.get("hillshade") === "true",
 	};
@@ -127,9 +138,32 @@ export function MapPage({ manifest }: { manifest: Manifest }) {
 				url,
 				maxSlope: search.maxSlope,
 				minArea: search.minArea,
+				maxParking: search.parking,
 			});
 		}
-	}, [map, manifest, tent, search.season, search.maxSlope, search.minArea]);
+	}, [
+		map,
+		manifest,
+		tent,
+		search.season,
+		search.maxSlope,
+		search.minArea,
+		search.parking,
+	]);
+
+	// The best parking in view, ranked again whenever the map has settled
+	// after a move (its tiles loaded), or the filter changed.
+	const [best, setBest] = useState<RankedLot[]>([]);
+	useEffect(() => {
+		if (!map) return;
+		const filter = { maxSlope: search.maxSlope, maxParking: search.parking };
+		const rank = () => setBest(bestParking(map, filter));
+		rank();
+		map.on("idle", rank);
+		return () => {
+			map.off("idle", rank);
+		};
+	}, [map, search.maxSlope, search.parking]);
 
 	return (
 		<main className="relative h-dvh w-full">
@@ -146,6 +180,14 @@ export function MapPage({ manifest }: { manifest: Manifest }) {
 				onMaxSlopeChange={(maxSlope) => setSearch({ maxSlope })}
 				minArea={search.minArea}
 				onMinAreaChange={(minArea) => setSearch({ minArea })}
+				parking={search.parking}
+				onParkingChange={(parking) => setSearch({ parking })}
+				bestParking={best}
+				onLotSelect={({ lot, lng, lat }) => {
+					if (!map) return;
+					map.flyTo({ center: [lng, lat], zoom: Math.max(map.getZoom(), 14) });
+					showParkingPopup(map, { lng, lat }, lot, search.maxSlope);
+				}}
 				photoUrl={googleSatelliteUrl(search.lat, search.lon, search.zoom)}
 				trails={search.trails}
 				onTrailsChange={(trails) => setSearch({ trails })}

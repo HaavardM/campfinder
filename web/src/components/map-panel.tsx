@@ -17,11 +17,20 @@ import { BASEMAPS, type Basemap, isBasemap } from "#/lib/basemaps";
 import {
 	AREA_COLOUR,
 	AREA_OUTLINE_COLOUR,
+	PARKING_COLOUR,
+	type RankedLot,
 	SCORE_COLOURS,
 	SLOPE_LIMITS,
 	type SlopeLimit,
 } from "#/lib/flat-layers";
 import type { Tent as TentRow } from "#/lib/map-data";
+import {
+	formatArea,
+	formatDistance,
+	PARKING_LIMITS,
+	type ParkingLimit,
+	RANK_DISTANCE,
+} from "#/lib/parking";
 import type { Place } from "#/lib/place-search";
 import { REGIONS, type Region } from "#/lib/regions";
 import { isSeason, SEASONS, type Season } from "#/lib/seasons";
@@ -36,6 +45,10 @@ type Props = {
 	onMaxSlopeChange: (maxSlope: SlopeLimit) => void;
 	minArea: number;
 	onMinAreaChange: (minArea: number) => void;
+	parking: ParkingLimit | undefined;
+	onParkingChange: (parking: ParkingLimit | undefined) => void;
+	bestParking: RankedLot[];
+	onLotSelect: (lot: RankedLot) => void;
 	photoUrl: string;
 	trails: boolean;
 	onTrailsChange: (trails: boolean) => void;
@@ -135,8 +148,48 @@ export function MapPanel(props: Props) {
 						/>
 					</div>
 
+					{/* Spots this close to parking stand out; the rest are dimmed,
+					    since OpenStreetMap doesn't know every lot. */}
+					<div className="flex flex-col gap-2 text-sm">
+						<span className="text-muted-foreground">
+							Close to parking (as the crow flies)
+						</span>
+						<ToggleGroup
+							type="single"
+							variant="outline"
+							size="sm"
+							className="w-full"
+							value={String(props.parking ?? "any")}
+							onValueChange={(value) => {
+								if (!value) return; // the active item clicked again
+								props.onParkingChange(
+									PARKING_LIMITS.find((l) => String(l) === value),
+								);
+							}}
+						>
+							<ToggleGroupItem value="any" className="flex-1">
+								Any
+							</ToggleGroupItem>
+							{PARKING_LIMITS.map((limit) => (
+								<ToggleGroupItem
+									key={limit}
+									value={String(limit)}
+									className="flex-1 px-1"
+								>
+									{formatDistance(limit)}
+								</ToggleGroupItem>
+							))}
+						</ToggleGroup>
+					</div>
+
 					<ScoreLegend />
 				</div>
+
+				<BestParking
+					lots={props.bestParking}
+					distance={props.parking ?? RANK_DISTANCE}
+					onSelect={props.onLotSelect}
+				/>
 
 				<div className="flex gap-1">
 					{REGIONS.map((region) => (
@@ -219,6 +272,57 @@ export function MapPanel(props: Props) {
 	);
 }
 
+// The parking lots in view with the most flat ground for the tent around
+// them: where to drive to. Click one to go there.
+function BestParking({
+	lots,
+	distance,
+	onSelect,
+}: {
+	lots: RankedLot[];
+	distance: ParkingLimit;
+	onSelect: (lot: RankedLot) => void;
+}) {
+	return (
+		<div className="flex flex-col gap-1 rounded-md border p-3 text-sm">
+			<div className="flex justify-between gap-2">
+				<span className="font-medium">Best parking in view</span>
+				<span className="text-muted-foreground text-xs">
+					flat within {formatDistance(distance)}
+				</span>
+			</div>
+			{lots.length === 0 && (
+				<span className="text-muted-foreground text-xs">
+					No parking with flat ground in reach here. Zoom in on a region.
+				</span>
+			)}
+			{lots.map((ranked) => (
+				<Button
+					key={ranked.lot.osm_id}
+					variant="ghost"
+					size="sm"
+					className="-mx-2 justify-between gap-2"
+					onClick={() => onSelect(ranked)}
+				>
+					<span className="flex min-w-0 items-center gap-1.5">
+						<span
+							className="size-2 shrink-0 rounded-full"
+							style={{ background: PARKING_COLOUR }}
+						/>
+						<span className="truncate">{ranked.lot.name ?? "Parking"}</span>
+						{ranked.lot.hiking && (
+							<span className="text-muted-foreground text-xs">hikers</span>
+						)}
+					</span>
+					<span className="font-medium tabular-nums">
+						{formatArea(ranked.m2)}
+					</span>
+				</Button>
+			))}
+		</div>
+	);
+}
+
 // What the colours mean: green areas have spots for the tent, and the orange
 // areas, when zoomed in, are where it fits.
 function ScoreLegend() {
@@ -245,6 +349,13 @@ function ScoreLegend() {
 					style={{ background: AREA_COLOUR, borderColor: AREA_OUTLINE_COLOUR }}
 				/>
 				Zoom in to see where it fits; click an area for aerial photos.
+			</span>
+			<span className="flex items-center gap-1.5">
+				<span
+					className="size-2.5 shrink-0 rounded-full border border-white"
+					style={{ background: PARKING_COLOUR }}
+				/>
+				Parking from OpenStreetMap: bigger with more flat ground in reach.
 			</span>
 		</div>
 	);
