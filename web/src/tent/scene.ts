@@ -847,6 +847,12 @@ function warmUp() {
 	bloom.enabled = glowing;
 	fire.castShadow = highQuality;
 	redrawShadows();
+	// Everything is ready: fade out the loading screen in tent.html.
+	const loading = document.getElementById("loading");
+	if (loading) {
+		loading.style.opacity = "0";
+		loading.addEventListener("transitionend", () => loading.remove());
+	}
 }
 
 resize();
