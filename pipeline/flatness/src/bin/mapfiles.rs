@@ -58,7 +58,7 @@ const SQUARE_CELLS: i32 = 8;
 const AREAS_MIN_ZOOM: u32 = 14;
 /// The distances to parking the map offers, in metres (PARKING_LIMITS in
 /// the web app). Farther than the last counts as no parking near.
-const PARKING_LIMITS: [u16; 4] = [250, 500, 1000, 2000];
+const PARKING_LIMITS: [u16; 3] = [250, 500, 1000];
 /// The parking lots are in the tiles from this zoom: the map draws them
 /// from zoom 11, but lists the best ones in view from here.
 const PARKING_MIN_ZOOM: u32 = 9;

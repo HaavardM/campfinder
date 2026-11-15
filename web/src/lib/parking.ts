@@ -3,7 +3,7 @@
 
 // The distances to parking the files have counts for (PARKING_LIMITS in
 // mapfiles.rs), in metres. Farther than the last counts as no parking near.
-export const PARKING_LIMITS = [250, 500, 1000, 2000] as const;
+export const PARKING_LIMITS = [250, 500, 1000] as const;
 export type ParkingLimit = (typeof PARKING_LIMITS)[number];
 export function isParkingLimit(value: unknown): value is ParkingLimit {
 	return PARKING_LIMITS.includes(value as ParkingLimit);

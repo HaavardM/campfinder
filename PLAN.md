@@ -120,10 +120,10 @@ manifest.json                   tents, and which file is which tent and season
            1°, 2°, 3°; n = cells
   areas    zoom 14–16: connected spots at each limit, outlines traced:
            limit (1, 2, 3), m2, x/y (a UTM point inside), parking_m
-           (straight line from the nearest cell to parking, if ≤ 2 km)
+           (straight line from the nearest cell to parking, if ≤ 1 km)
   parking  zoom 9–16: OSM parking lots in and around the tiles: osm_id,
            name, hiking, fee, and m3_500 etc. = m² of spots at ≤ 3°
-           within 500 m (also 250 m, 1 km, 2 km; each limit)
+           within 500 m (also 250 m and 1 km; each limit)
 ```
 
 PMTiles holds every tile in one file with an index, so the browser reads
