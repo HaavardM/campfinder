@@ -11,8 +11,8 @@
 //!   per square (80 m at zoom 12, doubling with each zoom out to zoom 5),
 //!   with how many of its 10 m cells are spots at up to 1°, 2° and 3°, in
 //!   all and within each of the distances to parking.
-//! - `<tent>.<season>.areas.geojsonl`: the zoomed-in areas. For each of
-//!   those slope limits, neighbouring spot cells joined into one polygon,
+//! - `<tent>.<season>.areas.<limit>.geojsonl`: the zoomed-in areas, one
+//!   file per slope limit: neighbouring spot cells joined into one polygon,
 //!   with its size, a point inside it, and how far its nearest cell is from
 //!   parking.
 //!
@@ -202,7 +202,7 @@ fn geojson(data: &Path, out: &Path) {
             || write_points(&file("points"), &spots),
             || {
                 rayon::join(
-                    || write_areas(&file("areas"), &spots),
+                    || write_areas(|limit| file(&format!("areas.{limit}")), &spots),
                     || write_parking(&file("parking"), &parking, &spots),
                 )
             },
@@ -335,51 +335,64 @@ fn write_points(path: &Path, spots: &HashMap<Cell, Spot>) -> usize {
 /// joined into polygons. `parking_m` is how far the area's nearest cell is
 /// from parking, left out when there's none within the last limit.
 /// Returns how many were written.
-fn write_areas(path: &Path, spots: &HashMap<Cell, Spot>) -> usize {
+///
+/// The limits are independent, so all three are traced at once, each
+/// streamed to a file of its own, `path(limit)` (not kept in memory: a
+/// region's areas run to gigabytes of GeoJSON); tippecanoe reads the three
+/// into one layer.
+/// (Storing the bands between limits instead, so the flattest ground isn't
+/// in all three, made the file bigger: at 10 m the slope is noisy, and the
+/// ragged edges between bands cost more than the overlap saves.)
+fn write_areas(path: impl Fn(u8) -> PathBuf + Sync, spots: &HashMap<Cell, Spot>) -> usize {
+    LIMITS.par_iter().map(|&limit| write_areas_at(&path(limit), limit, spots)).sum()
+}
+
+/// One limit's areas as GeoJSON lines (see `write_areas`) to `path`; returns
+/// how many.
+fn write_areas_at(path: &Path, limit: u8, spots: &HashMap<Cell, Spot>) -> usize {
     let to_lon_lat = to_lon_lat();
     let mut out = BufWriter::new(File::create(path).unwrap());
     let mut written = 0;
-    for limit in LIMITS {
-        let cells: HashSet<Cell> = spots
-            .iter()
-            .filter(|&(_, spot)| spot.tenths <= limit * 10)
-            .map(|(&cell, _)| cell)
-            .collect();
-        let mut seen: HashSet<Cell> = HashSet::new();
-        let mut starts: Vec<Cell> = cells.iter().copied().collect();
-        starts.sort(); // the same output on every run
-        for start in starts {
-            if !seen.insert(start) {
-                continue;
-            }
-            let area = connected(start, &cells, &mut seen);
-            // A point inside the area for the photo link: the middle of one
-            // of its cells.
-            let half = CELL_SIZE_M as i32 / 2;
-            let (x, y) = (start.0 * CELL_SIZE_M as i32 + half, start.1 * CELL_SIZE_M as i32 + half);
-            let parking = match area.iter().filter_map(|cell| spots[cell].parking_m).min() {
-                Some(m) => format!(r#","parking_m":{m}"#),
-                None => String::new(),
-            };
-            write!(
-                out,
-                r#"{{"type":"Feature","tippecanoe":{{"minzoom":{AREAS_MIN_ZOOM}}},"properties":{{"limit":{limit},"m2":{},"x":{x},"y":{y}{parking}}},"geometry":{{"type":"MultiPolygon","coordinates":["#,
-                area.len() * CELL_SIZE_M * CELL_SIZE_M,
-            )
-            .unwrap();
-            for (p, polygon) in polygons_with_holes(outline(&area, &cells)).iter().enumerate() {
-                out.write_all(if p == 0 { b"[" } else { b",[" }).unwrap();
-                for (r, ring) in polygon.iter().enumerate() {
-                    if r > 0 {
-                        out.write_all(b",").unwrap();
-                    }
-                    write_ring(&mut out, ring, &to_lon_lat);
-                }
-                out.write_all(b"]").unwrap();
-            }
-            out.write_all(b"]}}\n").unwrap();
-            written += 1;
+    // Whether a cell is a spot at this limit, asked of `spots` directly: a
+    // set of the cells of their own would cost gigabytes at this scale.
+    let is_in = |cell: Cell| spots.get(&cell).is_some_and(|spot| spot.tenths <= limit * 10);
+    let mut seen: HashSet<Cell> = HashSet::new();
+    let mut starts: Vec<Cell> =
+        spots.iter().filter(|&(_, spot)| spot.tenths <= limit * 10).map(|(&cell, _)| cell).collect();
+    // The same output on every run. Cells are unique, so an unstable sort
+    // gives the same order, and in parallel.
+    starts.par_sort_unstable();
+    for start in starts {
+        if !seen.insert(start) {
+            continue;
         }
+        let area = connected(start, is_in, &mut seen);
+        // A point inside the area for the photo link: the middle of one
+        // of its cells.
+        let half = CELL_SIZE_M as i32 / 2;
+        let (x, y) = (start.0 * CELL_SIZE_M as i32 + half, start.1 * CELL_SIZE_M as i32 + half);
+        let parking = match area.iter().filter_map(|cell| spots[cell].parking_m).min() {
+            Some(m) => format!(r#","parking_m":{m}"#),
+            None => String::new(),
+        };
+        write!(
+            out,
+            r#"{{"type":"Feature","tippecanoe":{{"minzoom":{AREAS_MIN_ZOOM}}},"properties":{{"limit":{limit},"m2":{},"x":{x},"y":{y}{parking}}},"geometry":{{"type":"MultiPolygon","coordinates":["#,
+            area.len() * CELL_SIZE_M * CELL_SIZE_M,
+        )
+        .unwrap();
+        for (p, polygon) in polygons_with_holes(outline(&area, is_in)).iter().enumerate() {
+            out.write_all(if p == 0 { b"[" } else { b",[" }).unwrap();
+            for (r, ring) in polygon.iter().enumerate() {
+                if r > 0 {
+                    out.write_all(b",").unwrap();
+                }
+                write_ring(&mut out, ring, &to_lon_lat);
+            }
+            out.write_all(b"]").unwrap();
+        }
+        out.write_all(b"]}}\n").unwrap();
+        written += 1;
     }
     out.flush().unwrap();
     written
@@ -442,14 +455,14 @@ fn write_parking(path: &Path, parking: &Parking, spots: &HashMap<Cell, Spot>) {
     out.flush().unwrap();
 }
 
-/// All cells reachable from `start` through cells that share an edge (a
-/// flood fill, with a stack instead of recursion).
-fn connected(start: Cell, cells: &HashSet<Cell>, seen: &mut HashSet<Cell>) -> Vec<Cell> {
+/// All cells reachable from `start` through cells that share an edge and
+/// are `is_in` (a flood fill, with a stack instead of recursion).
+fn connected(start: Cell, is_in: impl Fn(Cell) -> bool, seen: &mut HashSet<Cell>) -> Vec<Cell> {
     let mut area = vec![start];
     let mut stack = vec![start];
     while let Some((x, y)) = stack.pop() {
         for next in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)] {
-            if cells.contains(&next) && seen.insert(next) {
+            if is_in(next) && seen.insert(next) {
                 area.push(next);
                 stack.push(next);
             }
@@ -462,24 +475,24 @@ fn connected(start: Cell, cells: &HashSet<Cell>, seen: &mut HashSet<Cell>) -> Ve
 /// cell units). Every cell side that borders a cell outside the area is a
 /// piece of outline, walked counter-clockwise around its cell; joining the
 /// pieces end to start gives the rings: counter-clockwise around the outside,
-/// clockwise around holes. `cells` are all the cells at this limit: a
+/// clockwise around holes. `is_in` tells all the cells at this limit: a
 /// neighbour among them is always in the same area.
-fn outline(area: &[Cell], cells: &HashSet<Cell>) -> Vec<Vec<Cell>> {
+fn outline(area: &[Cell], is_in: impl Fn(Cell) -> bool) -> Vec<Vec<Cell>> {
     // Edges by their start corner. A corner where the area touches itself
     // diagonally starts two edges, hence the Vec.
     let mut edges: HashMap<Cell, Vec<Cell>> = HashMap::new();
     let mut add = |from: Cell, to: Cell| edges.entry(from).or_default().push(to);
     for &(x, y) in area {
-        if !cells.contains(&(x, y - 1)) {
+        if !is_in((x, y - 1)) {
             add((x, y), (x + 1, y)); // south side, walking east
         }
-        if !cells.contains(&(x + 1, y)) {
+        if !is_in((x + 1, y)) {
             add((x + 1, y), (x + 1, y + 1)); // east side, walking north
         }
-        if !cells.contains(&(x, y + 1)) {
+        if !is_in((x, y + 1)) {
             add((x + 1, y + 1), (x, y + 1)); // north side, walking west
         }
-        if !cells.contains(&(x - 1, y)) {
+        if !is_in((x - 1, y)) {
             add((x, y + 1), (x, y)); // west side, walking south
         }
     }
@@ -664,7 +677,8 @@ mod tests {
     use super::*;
 
     fn traced(area: &[Cell]) -> Vec<Vec<Cell>> {
-        outline(area, &area.iter().copied().collect())
+        let cells: HashSet<Cell> = area.iter().copied().collect();
+        outline(area, |cell| cells.contains(&cell))
     }
 
     #[test]
@@ -686,7 +700,7 @@ mod tests {
     fn cells_touching_at_a_corner_are_separate() {
         let cells: HashSet<Cell> = [(0, 0), (1, 1)].into_iter().collect();
         let mut seen = HashSet::from([(0, 0)]);
-        assert_eq!(connected((0, 0), &cells, &mut seen), vec![(0, 0)]);
+        assert_eq!(connected((0, 0), |cell| cells.contains(&cell), &mut seen), vec![(0, 0)]);
     }
 
     #[test]

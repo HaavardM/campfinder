@@ -27,12 +27,17 @@ flatness/target/release/mapfiles geojson "$build"
 # -Z/-z: zoom 5 to 16; the features say which zooms they belong to. -r1 and
 # the no-limit flags: keep every feature at every zoom, the data already
 # has the right detail per zoom. -t: temporary files next to the output,
-# not in /tmp, which can be a few GB of RAM (tmpfs) and too small.
+# not in /tmp, which can be a few GB of RAM (tmpfs) and too small. The
+# areas come in one file per slope limit, read into one layer.
 for points in "$build"/*.points.geojsonl; do
   name=$(basename "$points" .points.geojsonl) # keron-4-gt.summer
+  areas=()
+  for file in "$build/$name".areas.*.geojsonl; do
+    areas+=(-L "areas:$file")
+  done
   tippecanoe --quiet --force --read-parallel -Z5 -z16 -r1 -t "$build" \
     --no-feature-limit --no-tile-size-limit --no-tile-stats \
-    -L "scores:$points" -L "areas:$build/$name.areas.geojsonl" -L "parking:$build/$name.parking.geojsonl" \
+    -L "scores:$points" "${areas[@]}" -L "parking:$build/$name.parking.geojsonl" \
     -o "$build/$name.pmtiles" &
 done
 wait
