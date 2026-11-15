@@ -23,13 +23,18 @@ mkdir -p "$build"
 # parking lots with the flat ground around each.
 flatness/target/release/mapfiles geojson "$build"
 
-# One tippecanoe per tent and season, all at once (each is partly serial).
+# One tippecanoe per tent and season, all at once (each is partly serial),
+# sharing the CPUs: each would otherwise start a thread per CPU, and the
+# memory and temporary files that go with each.
 # -Z/-z: zoom 5 to 16; the features say which zooms they belong to. -r1 and
 # the no-limit flags: keep every feature at every zoom, the data already
 # has the right detail per zoom. -t: temporary files next to the output,
 # not in /tmp, which can be a few GB of RAM (tmpfs) and too small. The
 # areas come in one file per slope limit, read into one layer.
-for points in "$build"/*.points.geojsonl; do
+jobs=("$build"/*.points.geojsonl)
+cpus=$(getconf _NPROCESSORS_ONLN)
+export TIPPECANOE_MAX_THREADS=$(( cpus / ${#jobs[@]} > 0 ? cpus / ${#jobs[@]} : 1 ))
+for points in "${jobs[@]}"; do
   name=$(basename "$points" .points.geojsonl) # keron-4-gt.summer
   areas=()
   for file in "$build/$name".areas.*.geojsonl; do
