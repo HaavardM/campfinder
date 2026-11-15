@@ -613,6 +613,11 @@ function buildComposer(): EffectComposer {
 			samples: 4,
 		}),
 	);
+	// The composer draws into two buffers in turn. The scene always lands in
+	// the same one: the passes after it, GTAO and the output, swap twice a
+	// frame. The other only gets full-screen copies, where 4× multisampling
+	// smooths nothing and costs a full resolve per copy.
+	c.renderTarget1.samples = 0;
 	const ao = new GTAOPass(scene, camera, 1, 1);
 	ao.updateGtaoMaterial({
 		radius: 0.35,
@@ -625,6 +630,8 @@ function buildComposer(): EffectComposer {
 	// normals. Drawn one-sided, the inside of the tent fabric is missing
 	// from it, and the mountains beyond darken the fabric instead.
 	ao.normalMaterial.side = THREE.DoubleSide;
+	const sizeAo = ao.setSize.bind(ao);
+	ao.setSize = (width, height) => sizeAo(width / 2, height / 2);
 	// That picture should only hold what is in the depth buffer. Smoke,
 	// steam, sparks, snowflakes, the northern lights, the see-through
 	// fabric: drawn with that plain material they would be solid surfaces
@@ -745,10 +752,10 @@ function resize() {
 	plan.top = half / Math.min(aspect, 1);
 	plan.bottom = -half / Math.min(aspect, 1);
 	plan.updateProjectionMatrix();
-	// High quality renders at normal pixel density, even on a retina
-	// screen: a quarter of the pixels, and its 4× multisampling keeps the
-	// edges sharp. Ambient occlusion is soft, so the loss can't be seen.
-	composer?.setPixelRatio(1);
+	// High quality renders as sharp as the normal view, up to 1.5 pixels
+	// per point. The ambient occlusion, the costly part, is worked out at
+	// half that (see buildComposer); it is soft anyway.
+	composer?.setPixelRatio(Math.min(renderer.getPixelRatio(), 1.5));
 	composer?.setSize(w, h);
 }
 // Watch the canvas rather than the window: turning an iPhone fires the
