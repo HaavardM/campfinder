@@ -4,6 +4,8 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { aurora } from "./aurora";
 import {
 	campKitchen,
 	car,
@@ -125,10 +127,10 @@ yourChair.add(you);
 partnersChair.add(partner);
 
 const theCar = car();
-const theSkis = skis();
-const pulks = [pulk("#2f4d3c"), pulk("#3d4652")];
 const theFridge = fridge();
 const theEcoflow = ecoflow();
+const theSkis = skis();
+const pulks = [pulk("#2f4d3c"), pulk("#3d4652")];
 const theWoodBox = woodBox();
 const bigTable = table(
 	"Camp table (Helinox Table Two size)",
@@ -195,10 +197,10 @@ const SEASONAL: [Item, Season[]][] = [
 	[smallTable, ["fall", "winter"]],
 	[bigTable, ["summer"]],
 	[theCar, ["summer", "fall"]],
-	[theSkis, ["winter"]],
-	...pulks.map((p): [Item, Season[]] => [p, ["winter"]]),
 	[theFridge, ["summer", "fall"]],
 	[theEcoflow, ["summer", "fall"]],
+	[theSkis, ["winter"]],
+	...pulks.map((p): [Item, Season[]] => [p, ["winter"]]),
 ];
 
 // In summer there's no fire to watch: you sit across the table from each
@@ -228,6 +230,7 @@ function setSeason(next: Season) {
 	if (selected) outline.setFromObject(selected);
 	hangLantern();
 	lighting.setStove(stoveUp(next));
+	lighting.setWinter(next === "winter");
 	// Seated, follow your chair to its new spot.
 	if (view === "sit") setView("sit");
 	redrawShadows();
@@ -312,10 +315,15 @@ scene.add(jackRing);
 
 // ---------------------------------------------------------------- lights
 
+const northernLights = aurora();
+northernLights.visible = false;
+scene.add(northernLights);
 const lighting = buildLighting(renderer, scene, {
 	stove: theStove,
 	lantern: hanging.light,
 	stars: landscape.stars,
+	snow: landscape.snow,
+	northernLights,
 });
 
 // ---------------------------------------------------------------- views
@@ -590,6 +598,13 @@ function setSeeThrough(on: boolean) {
 let composer: EffectComposer | null = null;
 let highQuality = true;
 
+// High quality also lets the brightest things glow softly into what is
+// around them: the flames, the lantern, sparks, the fabric lit from inside.
+// Only at night, when they are the brightest things in view; by day and
+// in the evening the sky, the low sun and snow would glow instead.
+const BLOOM: Record<TimeOfDay, number> = { day: 0, evening: 0, night: 0.6 };
+const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0, 0.5, 1);
+
 function buildComposer(): EffectComposer {
 	const c = new EffectComposer(
 		renderer,
@@ -610,8 +625,25 @@ function buildComposer(): EffectComposer {
 	// normals. Drawn one-sided, the inside of the tent fabric is missing
 	// from it, and the mountains beyond darken the fabric instead.
 	ao.normalMaterial.side = THREE.DoubleSide;
+	// That picture should only hold what is in the depth buffer. Smoke,
+	// steam, sparks, snowflakes, the northern lights, the see-through
+	// fabric: drawn with that plain material they would be solid surfaces
+	// darkening what is behind them. Leave out whatever doesn't write depth.
+	const occlude = ao.render.bind(ao);
+	const hidden: THREE.Object3D[] = [];
+	ao.render = (...args) => {
+		scene.traverseVisible((o) => {
+			const m = o instanceof THREE.Mesh ? o.material : null;
+			if (m && !Array.isArray(m) && !m.depthWrite) hidden.push(o);
+		});
+		for (const o of hidden) o.visible = false;
+		occlude(...args);
+		for (const o of hidden) o.visible = true;
+		hidden.length = 0;
+	};
 	c.addPass(new RenderPass(scene, camera));
 	c.addPass(ao);
+	c.addPass(bloom);
 	c.addPass(new OutputPass());
 	return c;
 }
@@ -624,6 +656,8 @@ export const controls = {
 	setSeason,
 	setTime(time: TimeOfDay) {
 		lighting.set(time);
+		bloom.strength = BLOOM[time];
+		bloom.enabled = bloom.strength > 0;
 		redrawShadows();
 	},
 	setSeeThrough,
@@ -759,6 +793,8 @@ const clock = new THREE.Clock();
 function frame() {
 	const dt = Math.min(clock.getDelta(), 0.1);
 	theStove.burn(clock.elapsedTime);
+	landscape.snow.material.uniforms.time.value = clock.elapsedTime;
+	northernLights.material.uniforms.time.value = clock.elapsedTime;
 	shineThroughFabric();
 	if (view === "outside") orbit.update();
 	if (view === "plan") planControls.update();
@@ -783,6 +819,12 @@ function warmUp() {
 	for (const s of SEASONS) landscape.prepare(s);
 	const fire = theStove.fires[0];
 	fire.castShadow = true;
+	// And what only shows in winter or at night: snow, the northern lights
+	// (see lighting.ts) and the night glow.
+	const snow = landscape.snow;
+	const glowing = bloom.enabled;
+	const shimmering = northernLights.visible;
+	snow.visible = northernLights.visible = bloom.enabled = true;
 	renderer.compile(scene, camera);
 	if (!composer) {
 		composer = buildComposer();
@@ -793,6 +835,9 @@ function warmUp() {
 	composer.renderToScreen = false;
 	composer.render(0);
 	composer.renderToScreen = true;
+	snow.visible = season === "winter";
+	northernLights.visible = shimmering;
+	bloom.enabled = glowing;
 	fire.castShadow = highQuality;
 	redrawShadows();
 }

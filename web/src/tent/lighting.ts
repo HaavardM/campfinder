@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { Sky } from "three/addons/objects/Sky.js";
+import type { Stove } from "./gear/stove";
+import type { Snow } from "./snow";
 import { throughFabric as daylight, FABRIC_LAYER } from "./tent";
 
 // Sun, sky and the lights inside the tent, with three times of day.
@@ -18,6 +20,12 @@ type Preset = {
 	fire: number;
 	lantern: number;
 	stars: boolean;
+	// Wood smoke from the chimney: pale against the day sky, dark and
+	// faint at night, when the sparks show instead.
+	smoke: string;
+	sparks: boolean;
+	// How bright falling snow is.
+	snow: number;
 	// Haze colour near the horizon, and how strongly the sky reflects in
 	// water and steel.
 	fog: string;
@@ -36,6 +44,9 @@ const PRESETS: Record<TimeOfDay, Preset> = {
 		fire: 1.5,
 		lantern: 0,
 		stars: false,
+		smoke: "#b4b8bc",
+		sparks: false,
+		snow: 1,
 		fog: "#c3d0da",
 		reflections: 1,
 	},
@@ -50,6 +61,9 @@ const PRESETS: Record<TimeOfDay, Preset> = {
 		fire: 4,
 		lantern: 1.5,
 		stars: false,
+		smoke: "#a99a92",
+		sparks: true,
+		snow: 0.55,
 		fog: "#c9a58e",
 		reflections: 1,
 	},
@@ -64,6 +78,9 @@ const PRESETS: Record<TimeOfDay, Preset> = {
 		fire: 6,
 		lantern: 2.5,
 		stars: true,
+		smoke: "#2a2c30",
+		sparks: true,
+		snow: 0.15,
 		fog: "#0d1420",
 		reflections: 0.15,
 	},
@@ -73,6 +90,8 @@ export type Lighting = {
 	set(time: TimeOfDay): void;
 	// Whether the stove is lit: in summer there is none.
 	setStove(on: boolean): void;
+	// Northern lights on winter nights.
+	setWinter(on: boolean): void;
 };
 
 export function buildLighting(
@@ -80,9 +99,12 @@ export function buildLighting(
 	scene: THREE.Scene,
 	parts: {
 		// The stove flickers its own firelight; lighting sets how bright.
-		stove: { fireLevel: number };
+		stove: Pick<Stove, "fireLevel" | "smoke" | "sparks">;
 		lantern: THREE.PointLight;
 		stars: THREE.Points;
+		snow: Snow;
+		// Shown on winter nights.
+		northernLights: THREE.Object3D;
 	},
 ): Lighting {
 	// The sky shader draws on a big box. Kept out of the scene and painted
@@ -138,6 +160,7 @@ export function buildLighting(
 	const environments = new Map<TimeOfDay, THREE.Texture>();
 	let current: TimeOfDay | null = null;
 	let stoveOn = true;
+	let winter = false;
 
 	function set(time: TimeOfDay) {
 		if (time === current) return;
@@ -173,9 +196,13 @@ export function buildLighting(
 		parts.stove.fireLevel = p.fire;
 		parts.lantern.intensity = lanternLevel(p);
 		parts.stars.visible = p.stars;
+		parts.stove.smoke.material.uniforms.colour.value.set(p.smoke);
+		parts.stove.sparks.visible = p.sparks;
+		parts.snow.material.uniforms.light.value = p.snow;
 		renderer.toneMappingExposure = p.exposure;
 		fog.color.set(p.fog);
 
+		parts.northernLights.visible = winter && time === "night";
 		skyCamera.update(renderer, skyScene);
 		if (!environments.has(time)) {
 			// From the sky itself rather than the background: 256² is plenty
@@ -195,5 +222,10 @@ export function buildLighting(
 		parts.lantern.intensity = lanternLevel(PRESETS[current]);
 	}
 
-	return { set, setStove };
+	function setWinter(on: boolean) {
+		winter = on;
+		parts.northernLights.visible = winter && current === "night";
+	}
+
+	return { set, setStove, setWinter };
 }

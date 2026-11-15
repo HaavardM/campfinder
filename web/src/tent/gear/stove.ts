@@ -1,6 +1,7 @@
 import * as THREE from "three";
+import { NOISE_GLSL } from "../noise";
+import { type Plume, plume } from "../plume";
 import { FURNITURE, STOVE, TENT } from "../specs";
-import { make } from "../textures";
 import {
 	box,
 	cylinder,
@@ -23,8 +24,13 @@ export type Stove = Item & {
 	fireCentre: THREE.Vector3;
 	// How bright the firelight is before flicker; set per time of day.
 	fireLevel: number;
-	// Flickers the flames and their light together; call every frame with
-	// the time in seconds.
+	// Smoke from the top of the pipe, and sparks with it after dark;
+	// lighting.ts colours the smoke and shows the sparks for the time of day.
+	smoke: Plume;
+	sparks: Plume;
+	// Flickers the flames and their light together, and moves the smoke,
+	// sparks and the kettle's steam; call every frame with the time in
+	// seconds.
 	burn(seconds: number): void;
 };
 
@@ -59,9 +65,10 @@ export function stove(): Stove {
 		transparent: true,
 		opacity: 0.35,
 	});
-	// The fire seen through the glass: a painted picture of flames on a
-	// dark firebox, flickered in `burn`.
-	const glow = new THREE.MeshBasicMaterial({ map: flameTexture() });
+	// The fire seen through the glass, drawn by a shader (see fireMaterial),
+	// one per window so the flames fit its shape. Its clock also moves the
+	// smoke, sparks and steam.
+	const flames = { time: { value: 0 }, flicker: { value: 1 } };
 
 	// Door on the front, with its glass, hinges, handle and air spinner.
 	const door = box(
@@ -76,7 +83,7 @@ export function stove(): Stove {
 	addWindow(
 		result,
 		glass,
-		glow,
+		flames,
 		v3(s.bodyLength / 2 + 0.007, mid + 0.02, 0),
 		0.15,
 		0.17,
@@ -104,7 +111,7 @@ export function stove(): Stove {
 		addWindow(
 			result,
 			glass,
-			glow,
+			flames,
 			v3(0.01, mid + 0.01, side * (s.bodyWidth / 2 + 0.001)),
 			0.3,
 			0.13,
@@ -124,6 +131,51 @@ export function stove(): Stove {
 	const k = kettle();
 	k.position.set(0.11, top, 0);
 	result.add(k);
+	// A thin wisp of steam from its spout.
+	const steam = plume({
+		count: 24,
+		life: 2.5,
+		rise: 0.35,
+		spread: 0.06,
+		drift: new THREE.Vector3(0.06, 0, 0.03),
+		size: [0.02, 0.12],
+		opacity: 0.16,
+		time: flames.time,
+	});
+	steam.position.set(0.11 + 0.13, top + 0.11, 0);
+	result.add(steam);
+
+	// Out of the spark arrester on top of the pipe: a lazy plume of wood
+	// smoke leaning with the wind, and at night a few sparks.
+	const pipeTop = v3(PIPE_X, s.totalHeight, 0);
+	result.smoke = plume({
+		count: 60,
+		life: 9,
+		rise: 3.2,
+		spread: 0.7,
+		drift: new THREE.Vector3(1.8, 0, 0.7),
+		size: [0.2, 1.1],
+		opacity: 0.45,
+		time: flames.time,
+	});
+	// Only the odd spark: the arrester stops most of them.
+	result.sparks = plume({
+		count: 4,
+		life: 1.2,
+		rise: 0.7,
+		spread: 0.12,
+		drift: new THREE.Vector3(0.2, 0, 0.08),
+		size: [0.015, 0.005],
+		// Brighter than white, so they glow with bloom.
+		colour: new THREE.Color(2.2, 0.8, 0.2),
+		opacity: 0.8,
+		glowing: true,
+		time: flames.time,
+	});
+	for (const p of [result.smoke, result.sparks]) {
+		p.position.copy(pipeTop);
+		result.add(p);
+	}
 
 	// Heat-resistant mat under it, with a bound edge.
 	const { length, width } = FURNITURE.fireMat;
@@ -165,14 +217,13 @@ export function stove(): Stove {
 		result.add(light, light.target);
 		return light;
 	};
+	// Each light sits back in the firebox, where the flames are, not on the
+	// glass: from the glass, things a hand's width away (the shelf lips)
+	// were lit as if they touched the fire.
 	result.fires = [
-		lightThrough(v3(s.bodyLength / 2 + 0.01, mid, 0), v3(1, -0.1, 0), 0.25),
-		lightThrough(v3(0.01, mid, s.bodyWidth / 2 + 0.01), v3(0, -0.1, 1), 0.375),
-		lightThrough(
-			v3(0.01, mid, -s.bodyWidth / 2 - 0.01),
-			v3(0, -0.1, -1),
-			0.375,
-		),
+		lightThrough(v3(0.08, mid, 0), v3(1, -0.1, 0), 0.25),
+		lightThrough(v3(0.01, mid, 0.04), v3(0, -0.1, 1), 0.375),
+		lightThrough(v3(0.01, mid, -0.04), v3(0, -0.1, -1), 0.375),
 	];
 	result.fireLevel = 1;
 	result.fireCentre = v3(0, mid, 0);
@@ -185,12 +236,10 @@ export function stove(): Stove {
 	});
 
 	// A wood fire never burns evenly.
-	const map = glow.map as THREE.Texture;
 	result.burn = (t) => {
-		map.offset.x = Math.sin(t * 2.3) * 0.04 + Math.sin(t * 5.1) * 0.02;
-		map.offset.y = Math.sin(t * 7.7) * 0.03;
 		const flicker = 0.8 + 0.12 * Math.sin(t * 9.1) + 0.08 * Math.sin(t * 15.3);
-		glow.color.setScalar(flicker);
+		flames.time.value = t;
+		flames.flicker.value = flicker;
 		for (const light of result.fires) {
 			light.intensity = result.fireLevel * flicker * light.userData.share * 2;
 		}
@@ -198,68 +247,103 @@ export function stove(): Stove {
 	return result;
 }
 
-// A pane of glass with the firelight glowing through it. `facing` says
-// which way the pane faces: out of the front (x) or the side (z).
+// A pane of glass with the fire behind it. `facing` says which way the
+// pane faces: out of the front (x) or the side (z).
 function addWindow(
 	group: THREE.Group,
 	glass: THREE.Material,
-	glow: THREE.Material,
+	flames: FlameUniforms,
 	at: THREE.Vector3,
 	width: number,
 	height: number,
 	facing: THREE.Vector3,
 ) {
 	const pane = new THREE.Mesh(new THREE.PlaneGeometry(width, height), glass);
-	const light = new THREE.Mesh(new THREE.PlaneGeometry(width, height), glow);
-	for (const m of [light, pane]) {
+	const fire = new THREE.Mesh(
+		new THREE.PlaneGeometry(width, height),
+		fireMaterial(flames, width, height),
+	);
+	for (const m of [fire, pane]) {
 		m.position.copy(at);
 		// Planes face +z; turn them to face out along `facing`.
 		m.rotation.y = Math.atan2(facing.x, facing.z);
 	}
-	// The glass sits a millimetre in front of the fire picture.
+	// The glass sits a millimetre in front of the fire.
 	pane.position.addScaledVector(facing, 0.001);
-	group.add(light, pane);
+	group.add(fire, pane);
 }
 
-// Flames over a bed of embers, painted once. Slightly wider than needed so
-// it can be shifted around for the flicker.
-function flameTexture(): THREE.CanvasTexture {
-	const texture = make(
-		128,
-		1,
-		(ctx) => {
-			ctx.fillStyle = "#140b06";
-			ctx.fillRect(0, 0, 128, 128);
-			const embers = ctx.createLinearGradient(0, 128, 0, 60);
-			embers.addColorStop(0, "#ff5a10");
-			embers.addColorStop(0.3, "#b8300a");
-			embers.addColorStop(1, "rgba(60,15,5,0)");
-			ctx.fillStyle = embers;
-			ctx.fillRect(0, 60, 128, 68);
-			const tongues = [
-				[18, 60],
-				[40, 85],
-				[62, 70],
-				[84, 92],
-				[106, 64],
-			];
-			for (const [x, height] of tongues) {
-				const g = ctx.createLinearGradient(0, 120, 0, 120 - height);
-				g.addColorStop(0, "#fff0a0");
-				g.addColorStop(0.35, "#ffb030");
-				g.addColorStop(1, "rgba(255,90,20,0)");
-				ctx.fillStyle = g;
-				ctx.beginPath();
-				ctx.moveTo(x - 14, 122);
-				ctx.quadraticCurveTo(x - 12, 120 - height * 0.5, x, 120 - height);
-				ctx.quadraticCurveTo(x + 12, 120 - height * 0.5, x + 14, 122);
-				ctx.fill();
+type FlameUniforms = {
+	time: { value: number };
+	flicker: { value: number };
+};
+
+// Wood flames over a bed of embers, for a window `width` × `height` metres.
+// Noise scrolling upwards gives the tongues; it is sampled in centimetres,
+// so the flames are the same size in the narrow door glass and the long
+// side windows. Brighter than white at the core, so high quality's bloom
+// makes them glow.
+function fireMaterial(
+	flames: FlameUniforms,
+	width: number,
+	height: number,
+): THREE.ShaderMaterial {
+	return new THREE.ShaderMaterial({
+		uniforms: { ...flames, size: { value: new THREE.Vector2(width, height) } },
+		vertexShader: /* glsl */ `
+			varying vec2 vUv;
+			varying vec3 vNormal;
+			varying vec3 vToEye;
+			void main() {
+				vUv = uv;
+				vec4 at = modelViewMatrix * vec4(position, 1.0);
+				vNormal = normalMatrix * normal;
+				vToEye = -at.xyz;
+				gl_Position = projectionMatrix * at;
 			}
-		},
-		true,
-	);
-	texture.wrapS = THREE.MirroredRepeatWrapping;
-	return texture;
+		`,
+		fragmentShader: /* glsl */ `
+			uniform float time;
+			uniform float flicker;
+			uniform vec2 size;
+			varying vec2 vUv;
+			varying vec3 vNormal;
+			varying vec3 vToEye;
+
+			${NOISE_GLSL}
+
+			void main() {
+				// Centimetres across the window, from its bottom left corner.
+				vec2 cm = vUv * size * 100.0;
+				float up = vUv.y;
+
+				// Embers along the bottom, slowly breathing.
+				float bed = smoothstep(0.32, 0.0, up);
+				float glow = noise(cm * vec2(0.6, 0.9) + vec2(0.0, time * 0.25));
+				glow *= 0.75 + 0.25 * sin(time * 1.3 + cm.x * 0.4);
+				vec3 embers = vec3(1.0, 0.22, 0.04) * bed * (0.4 + 1.2 * glow);
+
+				// Flames: noise rising faster than the embers, thinning upwards,
+				// with tongues that sway from side to side.
+				float sway = sin(time * 1.7 + cm.y * 0.15) * 0.8;
+				float n = fbm(vec2((cm.x + sway) * 0.22, cm.y * 0.13 - time * 1.8));
+				float tongues = 0.6 + 0.4 * sin(cm.x * 0.55 + n * 5.0);
+				float body = (1.15 - up * 1.7) * tongues + (n - 0.5) * 1.1;
+				float flame = smoothstep(0.05, 0.45, body);
+				vec3 colour = mix(vec3(0.9, 0.18, 0.02), vec3(1.0, 0.62, 0.18), smoothstep(0.3, 0.8, body));
+				colour = mix(colour, vec3(1.0, 0.92, 0.7), smoothstep(0.75, 1.1, body));
+
+				vec3 firebox = vec3(0.02, 0.01, 0.006);
+				// Looking at the window from the side, the frame and the depth
+				// of the firebox hide the fire.
+				float facing = abs(dot(normalize(vNormal), normalize(vToEye)));
+				float seen = smoothstep(0.1, 0.45, facing);
+				gl_FragColor = vec4((firebox + (embers + colour * flame * 2.2) * seen) * flicker, 1.0);
+				#include <tonemapping_fragment>
+				#include <colorspace_fragment>
+			}
+		`,
+	});
 }
 
 // Four flat steel legs that fold under the body, splayed a little outwards.

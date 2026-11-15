@@ -4,6 +4,7 @@ import {
 	mergeVertices,
 } from "three/addons/utils/BufferGeometryUtils.js";
 import { fbm, random } from "./noise";
+import { type Snow, snowfall } from "./snow";
 
 // An invented high mountain plateau in the spirit of Hardangervidda or
 // Rondane: wide rolling heath with lichen and heather, scattered boulders
@@ -477,6 +478,8 @@ function buildStars(): THREE.Points {
 export type Landscape = {
 	group: THREE.Group;
 	stars: THREE.Points;
+	// Falling, in winter.
+	snow: Snow;
 	// Work out a season's ground colours ahead of time, without showing it.
 	prepare(season: Season): void;
 	setSeason(season: Season): void;
@@ -485,17 +488,19 @@ export type Landscape = {
 export function buildLandscape(): Landscape {
 	const group = new THREE.Group();
 	const stars = buildStars();
+	const snow = snowfall();
 	const ground = buildGround();
 	const water = buildWater();
 	const boulders = buildBoulders();
 	const shrubs = buildShrubs();
 	const cover = buildGroundCover();
 	const cairn = buildCairn();
-	group.add(ground.mesh, water, boulders, shrubs, cover, cairn, stars);
+	group.add(ground.mesh, water, boulders, shrubs, cover, cairn, stars, snow);
 
 	function setSeason(season: Season) {
 		ground.setSeason(season);
 		const winter = season === "winter";
+		snow.visible = winter;
 		// Frozen tarns under a dusting of snow.
 		const look = winter ? ICE : OPEN_WATER;
 		water.material.color.copy(look.color);
@@ -511,5 +516,11 @@ export function buildLandscape(): Landscape {
 		HEATHER.color.set(season === "summer" ? "#b7c99a" : "#ffffff");
 	}
 
-	return { group, stars, prepare: (s) => void ground.prepare(s), setSeason };
+	return {
+		group,
+		stars,
+		snow,
+		prepare: (s) => void ground.prepare(s),
+		setSeason,
+	};
 }
